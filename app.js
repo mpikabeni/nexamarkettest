@@ -1,0 +1,8452 @@
+/* =========================================================
+   NEXMARKET — app.js
+   Version finale frontend
+   ========================================================= */
+(() => {
+    "use strict";
+    /* =====================================================
+       CONFIGURATION
+    ===================================================== */
+    const CONFIG = {
+        // Backend Render NexMarket
+        API_BASE_URL:
+            window.NEXMARKET_API_URL ||
+            "https://nexamarket-backend-ffea.onrender.com/api",
+        APP_VERSION: "1.0.11",
+        ADMIN_PATH: "/admin/",
+        ADMIN_TAP_COUNT: 5,
+        ADMIN_TAP_WINDOW: 2500,
+        REQUEST_TIMEOUT: 20000,
+        SLOW_REQUEST_TIMEOUT: 35000,
+        MIN_WITHDRAWAL_XAF: 1000,
+        CHAT_REFRESH_MS: 5000
+    };
+    const MIN_WITHDRAWAL = CONFIG.MIN_WITHDRAWAL_XAF;
+    /* =====================================================
+       TELEGRAM WEB APP
+    ===================================================== */
+    const tg =
+        window.Telegram &&
+        window.Telegram.WebApp
+            ? window.Telegram.WebApp
+            : null;
+    /* =====================================================
+       ETAT APPLICATION
+    ===================================================== */
+    const state = {
+        currentPage: "home",
+        user: null,
+        wallet: null,
+        listings: [],
+        myListings: [],
+        transactions: [],
+        messages: [],
+        favorites: [],
+        loading: false,
+        adminTapCount: 0,
+        adminTapTimer: null,
+        searchQuery: "",
+        selectedCategory: "all",
+        sort: "recent",
+        sellDraft: null,
+        sellProofs: [],
+        sellPreviews: [],
+        sellChannelType: "public",
+        sellError: "",
+        authUser: null,
+        resolvedPhoto: "",
+        photoChecked: false,
+        listingsError: "",
+        selectedSubscribers: "all",
+        selectedPrice: "all",
+        rates: null,
+        sellPayMethod: null
+    };
+    /* =====================================================
+       DOM
+    ===================================================== */
+    const DOM = {
+        splash:
+            document.getElementById("splashScreen"),
+        app:
+            document.getElementById("app"),
+        pageContainer:
+            document.getElementById("pageContainer"),
+        profileAvatarButton:
+            document.getElementById("profileAvatarButton"),
+        telegramAvatar:
+            document.getElementById("telegramAvatar"),
+        avatarLetter:
+            document.getElementById("avatarLetter"),
+        headerGreeting:
+            document.getElementById("headerGreeting"),
+        headerSearchButton:
+            document.getElementById("headerSearchButton"),
+        faqButton:
+            document.getElementById("faqButton"),
+        bottomNavigation:
+            document.getElementById("bottomNavigation"),
+        toast:
+            document.getElementById("toast"),
+        toastTitle:
+            document.getElementById("toastTitle"),
+        toastMessage:
+            document.getElementById("toastMessage"),
+        modalContainer:
+            document.getElementById("modalContainer"),
+        modalOverlay:
+            document.getElementById("modalOverlay"),
+        modalContent:
+            document.getElementById("modalContent"),
+        modalBody:
+            document.getElementById("modalBody"),
+        modalClose:
+            document.getElementById("modalClose")
+    };
+    /* =====================================================
+       INITIALISATION TELEGRAM
+    ===================================================== */
+    function initTelegram() {
+        if (!tg) {
+            return;
+        }
+        try {
+            tg.ready();
+            tg.expand();
+            if (typeof tg.setHeaderColor === "function") {
+                tg.setHeaderColor("#08080c");
+            }
+            if (typeof tg.setBackgroundColor === "function") {
+                tg.setBackgroundColor("#08080c");
+            }
+        } catch (error) {
+            console.warn(
+                "Telegram WebApp initialisation:",
+                error
+            );
+        }
+    }
+    /* =====================================================
+       TELEGRAM INIT DATA
+    ===================================================== */
+    function getTelegramInitData() {
+        if (!tg) {
+            return "";
+        }
+        return tg.initData || "";
+    }
+    function getTelegramUser() {
+        if (!tg || !tg.initDataUnsafe) {
+            return null;
+        }
+        return tg.initDataUnsafe.user || null;
+    }
+    /* =====================================================
+       API
+    ===================================================== */
+    /* =====================================================
+       RÉVEIL DU SERVEUR (hébergement gratuit)
+       Un service Render gratuit s'endort : le 1er appel peut durer
+       jusqu'à ~1 minute. Au lieu d'enchaîner des appels qui attendent
+       chacun leur délai complet (= plusieurs minutes), on « réveille »
+       le serveur une seule fois, en affichant un message clair.
+    ===================================================== */
+    const BACKEND = { ready: false, promise: null, lastError: "" };
+
+    function setWakeBanner(visible, text) {
+        let banner = document.getElementById("serverWakeBanner");
+
+        if (!visible) {
+            banner?.remove();
+            return;
+        }
+
+        if (!banner) {
+            banner = document.createElement("div");
+            banner.id = "serverWakeBanner";
+            banner.className = "server-wake-banner";
+            document.body.appendChild(banner);
+        }
+
+        banner.textContent =
+            text || "Réveil du serveur NexMarket… quelques secondes.";
+    }
+
+    function wakeBackend() {
+        if (BACKEND.promise) {
+            return BACKEND.promise;
+        }
+
+        const healthUrl =
+            CONFIG.API_BASE_URL.replace(/\/api\/?$/, "") + "/health";
+
+        BACKEND.promise = (async () => {
+            const started = Date.now();
+            let bannerShown = false;
+
+            while (Date.now() - started < 120000) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 8000);
+
+                try {
+                    const response = await fetch(healthUrl, {
+                        signal: controller.signal,
+                        cache: "no-store"
+                    });
+
+                    clearTimeout(timer);
+
+                    if (response.ok) {
+                        BACKEND.ready = true;
+                        BACKEND.lastError = "";
+                        setWakeBanner(false);
+                        return true;
+                    }
+
+                    /* Le serveur répond mais n'est pas prêt : on lit pourquoi
+                       (le mode diagnostic renvoie la cause exacte). */
+                    let reason = "";
+
+                    try {
+                        reason = (await response.json())?.detail || "";
+                    } catch (parseError) {
+                        reason = "";
+                    }
+
+                    BACKEND.lastError =
+                        reason || `Le serveur répond avec le code ${response.status}.`;
+                } catch (error) {
+                    clearTimeout(timer);
+                    BACKEND.lastError = "";
+                }
+
+                if (Date.now() - started > 2500) {
+                    bannerShown = true;
+                    setWakeBanner(
+                        true,
+                        BACKEND.lastError
+                            ? `Serveur indisponible : ${BACKEND.lastError}`
+                            : undefined
+                    );
+                }
+
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+            }
+
+            setWakeBanner(false);
+            return false;
+        })();
+
+        return BACKEND.promise;
+    }
+
+    /* =====================================================
+       API (enveloppe : réveil + un nouvel essai pour les lectures)
+    ===================================================== */
+    async function apiRequest(endpoint, options = {}) {
+        if (endpoint !== "/health" && !BACKEND.ready) {
+            await Promise.race([
+                wakeBackend(),
+                new Promise((resolve) => setTimeout(resolve, 90000))
+            ]);
+        }
+
+        const method = String(options.method || "GET").toUpperCase();
+        const retries = method === "GET" ? 1 : 0;
+        let lastError;
+
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                return await apiRequestOnce(endpoint, options);
+            } catch (error) {
+                lastError = error;
+
+                if (!error.retryable || attempt === retries) {
+                    break;
+                }
+
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+            }
+        }
+
+        throw lastError;
+    }
+
+    async function apiRequestOnce(
+        endpoint,
+        options = {}
+    ) {
+        const controller =
+            new AbortController();
+        const slowCall =
+            /^\/(deposits|withdrawals|channels|listings)/.test(endpoint) &&
+            String(options.method || "GET").toUpperCase() === "POST";
+        const timeout =
+            setTimeout(
+                () => controller.abort(),
+                options.timeout ||
+                    (slowCall
+                        ? CONFIG.SLOW_REQUEST_TIMEOUT
+                        : CONFIG.REQUEST_TIMEOUT)
+            );
+        const headers = {
+            "Content-Type":
+                "application/json",
+            "Accept":
+                "application/json"
+        };
+        const initData =
+            getTelegramInitData();
+        /*
+         * Toujours transmettre les données Telegram au backend.
+         * Le X-Header est utilisé par NexMarket et l'Authorization
+         * permet aussi de rester compatible avec les routes qui
+         * attendent le format Telegram <initData>.
+         */
+        if (initData) {
+            headers[
+                "X-Telegram-Init-Data"
+            ] = initData;
+            headers[
+                "Authorization"
+            ] = `Telegram ${initData}`;
+        }
+        /*
+         * Session utilisateur NexMarket : le backend attend
+         * un JWT sous la forme Bearer <token> pour les routes
+         * protégées (wallet, retrait, lookup JP, etc.).
+         */
+        const sessionToken =
+            sessionStorage.getItem(
+                "nexmarket_session_token"
+            );
+        if (sessionToken) {
+            headers[
+                "Authorization"
+            ] = `Bearer ${sessionToken}`;
+        } else if (initData) {
+            /* Fallback uniquement avant authentification. */
+            headers[
+                "Authorization"
+            ] = `Telegram ${initData}`;
+        }
+        try {
+            const response =
+                await fetch(
+                    `${CONFIG.API_BASE_URL}${endpoint}`,
+                    {
+                        ...options,
+                        headers: {
+                            ...headers,
+                            ...(options.headers || {})
+                        },
+                        signal:
+                            controller.signal
+                    }
+                );
+            const contentType =
+                response.headers.get(
+                    "content-type"
+                ) || "";
+            let data;
+            if (
+                contentType.includes(
+                    "application/json"
+                )
+            ) {
+                data =
+                    await response.json();
+            } else {
+                const text =
+                    await response.text();
+                data = {
+                    detail: text
+                };
+            }
+            if (!response.ok) {
+                let message =
+                    data?.detail ||
+                    data?.message ||
+                    "Une erreur est survenue.";
+
+                /* Erreur de validation FastAPI : liste d'objets. */
+                if (Array.isArray(message)) {
+                    message =
+                        message
+                            .map((item) => item?.msg || "")
+                            .filter(Boolean)
+                            .join(" · ") || "Données invalides.";
+                }
+
+                /* Détail structuré {code, message, ...} (ex. accès refusé). */
+                const detailObject =
+                    data?.detail &&
+                    typeof data.detail === "object" &&
+                    !Array.isArray(data.detail)
+                        ? data.detail
+                        : null;
+
+                if (detailObject?.message) {
+                    message = detailObject.message;
+                }
+
+                if (typeof message !== "string") {
+                    message = "Erreur API";
+                }
+
+                const method = String(options.method || "GET").toUpperCase();
+
+                if (response.status === 404 && message === "Not Found") {
+                    /* « Not Found » brut = la ROUTE n'existe pas sur le serveur. */
+                    message =
+                        `Route introuvable sur le serveur (${method} ${endpoint}). ` +
+                        "Le serveur n'est pas à jour ou l'adresse de l'API est incorrecte.";
+                } else if (/<\/?[a-z][\s\S]*>/i.test(message)) {
+                    /* Page HTML (proxy / hébergeur) au lieu d'une réponse API. */
+                    message =
+                        `Le serveur est indisponible (HTTP ${response.status}).`;
+                }
+
+                const httpError = new Error(message.slice(0, 300));
+                httpError.status = response.status;
+
+                if (detailObject?.code) {
+                    httpError.code = detailObject.code;
+                    httpError.accessInfo = detailObject;
+                }
+
+                throw httpError;
+            }
+            return data;
+        } catch (error) {
+            if (
+                error.name ===
+                "AbortError"
+            ) {
+                const timeoutError = new Error(
+                    "Le serveur met trop de temps à répondre. Réessaie dans un instant."
+                );
+                timeoutError.retryable = true;
+                throw timeoutError;
+            }
+            if (error instanceof TypeError && error.message === "Failed to fetch") {
+                const networkError = new Error(
+                    "Impossible de joindre le serveur NexMarket. Vérifie ta connexion et réessaie."
+                );
+                networkError.retryable = true;
+                throw networkError;
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+    /* =====================================================
+       HELPERS
+    ===================================================== */
+    function escapeHTML(value) {
+        if (
+            value === null ||
+            value === undefined
+        ) {
+            return "";
+        }
+        return String(value)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
+    /* ---------- Langue + devise d'affichage ----------
+       Les montants réels (soldes, dépôts, retraits, paiements) restent
+       TOUJOURS en XAF. La devise choisie dans Paramètres ne change que
+       l'affichage : EUR (parité fixe 655,957) ou USD (taux du serveur). */
+    const EUR_XAF_PEG = 655.957;
+    const DISPLAY_CURRENCIES = ["XAF", "EUR", "USD"];
+    const RATES_CACHE_KEY = "nexmarket_rates_v1";
+
+    /* Le paiement en GRAM (TON) est-il configuré côté serveur ? */
+    function gramEnabled() {
+        return Boolean(state.rates?.gram_enabled);
+    }
+
+    function uiLocale() {
+        return window.NexI18n ? window.NexI18n.locale() : "fr-FR";
+    }
+    function displayCurrency() {
+        const value = String(state.user?.display_currency || "XAF").toUpperCase();
+        return DISPLAY_CURRENCIES.includes(value) ? value : "XAF";
+    }
+    /* Valeur d'une unité de `cur` en XAF (null si le taux est inconnu). */
+    function xafPer(cur) {
+        const code = String(cur || "XAF").toUpperCase();
+        if (code === "FCFA" || code === "XAF" || code === "XOF") {
+            return 1;
+        }
+        if (code === "EUR") {
+            return EUR_XAF_PEG;
+        }
+        if (code === "USD") {
+            const perXaf = Number(state.rates?.rates?.USD);
+            return perXaf > 0 ? 1 / perXaf : null;
+        }
+        return null;
+    }
+    function convertAmount(amount, from, to) {
+        const a = xafPer(from);
+        const b = xafPer(to);
+        if (!a || !b) {
+            return null;
+        }
+        return (Number(amount) * a) / b;
+    }
+    function readRatesCache() {
+        try {
+            const cached = JSON.parse(localStorage.getItem(RATES_CACHE_KEY) || "null");
+            if (cached?.data?.rates && Date.now() - cached.t < 12 * 3600 * 1000) {
+                state.rates = cached.data;
+            }
+        } catch (error) {
+            /* stockage indisponible : sans conséquence */
+        }
+    }
+    async function loadRates() {
+        try {
+            const data = await apiRequest("/rates");
+            if (data?.rates) {
+                const gramChanged = Boolean(state.rates?.gram_enabled) !== Boolean(data.gram_enabled);
+                state.rates = data;
+                try {
+                    localStorage.setItem(
+                        RATES_CACHE_KEY,
+                        JSON.stringify({ t: Date.now(), data })
+                    );
+                } catch (error) { /* ignoré */ }
+                if (gramChanged && state.currentPage === "sell") {
+                    navigateTo("sell").catch(() => {});
+                }
+                return true;
+            }
+        } catch (error) {
+            console.warn("Taux de change:", error.message);
+        }
+        return false;
+    }
+    function formatMoney(
+        amount,
+        currency = "FCFA"
+    ) {
+        if (
+            amount === null ||
+            amount === undefined ||
+            Number.isNaN(Number(amount))
+        ) {
+            return "—";
+        }
+        const target = displayCurrency();
+        const source = String(currency || "FCFA").toUpperCase();
+        const sourceIsXaf = ["FCFA", "XAF", "XOF"].includes(source);
+        const sameCurrency =
+            target === "XAF" ? sourceIsXaf : source === target;
+
+        if (!sameCurrency) {
+            const converted = convertAmount(amount, source, target);
+            if (converted !== null && Number.isFinite(converted)) {
+                try {
+                    const text = new Intl.NumberFormat(uiLocale(), {
+                        style: "currency",
+                        currency: target,
+                        currencyDisplay: "narrowSymbol",
+                        minimumFractionDigits: converted < 100 ? 2 : 0,
+                        maximumFractionDigits: converted < 100 ? 2 : 0
+                    }).format(converted);
+                    return `≈ ${text}`;
+                } catch (error) { /* retombe sur l'affichage normal */ }
+            }
+        }
+        return `${new Intl.NumberFormat(
+            uiLocale()
+        ).format(Number(amount))} ${currency}`;
+    }
+    function formatNumber(value) {
+        if (
+            value === null ||
+            value === undefined
+        ) {
+            return "—";
+        }
+        return new Intl.NumberFormat(
+            uiLocale()
+        ).format(Number(value));
+    }
+    function formatDate(value) {
+        if (!value) {
+            return "—";
+        }
+        const date =
+            new Date(value);
+        if (
+            Number.isNaN(
+                date.getTime()
+            )
+        ) {
+            return "—";
+        }
+        return new Intl.DateTimeFormat(
+            uiLocale(),
+            {
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric"
+            }
+        ).format(date);
+    }
+    function getInitials(user) {
+        if (!user) {
+            return "N";
+        }
+        const first =
+            user.first_name || "";
+        const last =
+            user.last_name || "";
+        const text =
+            `${first} ${last}`.trim();
+        if (!text) {
+            return "N";
+        }
+        return text
+            .split(/\s+/)
+            .slice(0, 2)
+            .map(
+                word =>
+                    word
+                        .charAt(0)
+                        .toUpperCase()
+            )
+            .join("");
+    }
+    function getDisplayName(user) {
+        if (!user) {
+            return "Utilisateur";
+        }
+        const name =
+            `${user.first_name || ""} ${user.last_name || ""}`
+                .trim();
+        return (
+            name ||
+            (user.username
+                ? `@${user.username}`
+                : "Utilisateur")
+        );
+    }
+    /* =====================================================
+       SVG ICONS
+    ===================================================== */
+    const ICONS = {
+        eye: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>`,
+        eyeOff: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.6 10.6 0 0 1 12 19C5.6 19 2 12 2 12a18.5 18.5 0 0 1 5.1-5.9M9.9 5.2A10 10 0 0 1 12 5c6.4 0 10 7 10 7a18.6 18.6 0 0 1-2.2 3.2M1 1l22 22"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/></svg>`,
+        copy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+        search: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-4-4"></path>
+            </svg>
+        `,
+        wallet: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5.5A2.5 2.5 0 0 1 3 16.5v-9Z"></path>
+                <path d="M3 8h15"></path>
+                <path d="M17 13h4"></path>
+                <circle cx="17" cy="13" r=".7"></circle>
+            </svg>
+        `,
+        deposit: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M12 19V5"></path>
+                <path d="m6.5 10.5 5.5-5.5 5.5 5.5"></path>
+                <path d="M5 19h14"></path>
+            </svg>
+        `,
+        withdraw: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M12 5v14"></path>
+                <path d="m6.5 13.5 5.5 5.5 5.5-5.5"></path>
+                <path d="M5 5h14"></path>
+            </svg>
+        `,
+        cart: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M6 7h12l1.2 13H4.8L6 7Z"></path>
+                <path d="M9 7a3 3 0 0 1 6 0"></path>
+            </svg>
+        `,
+        sell: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M12 19V5"></path>
+                <path d="m6.5 10.5 5.5-5.5 5.5 5.5"></path>
+                <path d="M5 19h14"></path>
+            </svg>
+        `,
+        message: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M20 11.5a7.5 7.5 0 0 1-7.8 7.5 8.5 8.5 0 0 1-3.4-.7L4 20l1.4-4.2A7.3 7.3 0 0 1 4.5 12 7.5 7.5 0 0 1 12 4.5h.5A7.5 7.5 0 0 1 20 11.5Z"></path>
+            </svg>
+        `,
+        user: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <circle cx="12" cy="8" r="3.5"></circle>
+                <path d="M5 20a7 7 0 0 1 14 0"></path>
+            </svg>
+        `,
+        heart: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M20.8 8.8c0 5.2-8.8 10-8.8 10S3.2 14 3.2 8.8A4.7 4.7 0 0 1 12 6.1a4.7 4.7 0 0 1 8.8 2.7Z"></path>
+            </svg>
+        `,
+        filter: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M4 6h16"></path>
+                <path d="M7 12h10"></path>
+                <path d="M10 18h4"></path>
+            </svg>
+        `,
+        arrow: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M5 12h14"></path>
+                <path d="m13 6 6 6-6 6"></path>
+            </svg>
+        `,
+        plus: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round">
+                <path d="M12 5v14"></path>
+                <path d="M5 12h14"></path>
+            </svg>
+        `,
+        close: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round">
+                <path d="M6 6l12 12"></path>
+                <path d="M18 6 6 18"></path>
+            </svg>
+        `,
+        channel: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <rect x="4" y="4" width="16" height="16" rx="4"></rect>
+                <path d="m8 12 2.5 2.5L16 9"></path>
+            </svg>
+        `,
+        lock: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+                <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+            </svg>
+        `,
+        help: `
+            <svg viewBox="0 0 24 24"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9"></circle>
+                <path d="M9.8 9a2.3 2.3 0 1 1 4.1 1.4c-.8.9-1.9 1.3-1.9 2.6"></path>
+                <path d="M12 16.5h.01"></path>
+            </svg>
+        `
+    };
+    /* =====================================================
+       TOAST
+    ===================================================== */
+    let toastTimeout = null;
+    function showToast(
+        title,
+        message
+    ) {
+        if (!DOM.toast) {
+            return;
+        }
+        DOM.toastTitle.textContent =
+            title || "";
+        DOM.toastMessage.textContent =
+            message || "";
+        DOM.toast.classList.add("show");
+        clearTimeout(toastTimeout);
+        toastTimeout =
+            setTimeout(() => {
+                DOM.toast.classList.remove(
+                    "show"
+                );
+            }, 3500);
+    }
+    /* =====================================================
+       MODAL
+    ===================================================== */
+    function openModal(content) {
+        if (!DOM.modalContainer) {
+            return;
+        }
+        DOM.modalBody.innerHTML =
+            content;
+        clearModalError();
+        DOM.modalContainer.classList.remove("locked");
+        DOM.modalContainer.classList.remove(
+            "hidden"
+        );
+        DOM.modalContainer.setAttribute(
+            "aria-hidden",
+            "false"
+        );
+        document.body.style.overflow =
+            "hidden";
+    }
+    function closeModal() {
+        if (DOM.modalContainer?.classList.contains("locked")) {
+            return;
+        }
+        stopChatRefresh();
+        if (!DOM.modalContainer) {
+            return;
+        }
+        DOM.modalContainer.classList.add(
+            "hidden"
+        );
+        DOM.modalContainer.setAttribute(
+            "aria-hidden",
+            "true"
+        );
+        DOM.modalBody.innerHTML = "";
+        document.body.style.overflow =
+            "";
+    }
+    function showModalError(
+        title,
+        message
+    ) {
+        const errorBox =
+            document.getElementById(
+                "modalError"
+            );
+        if (!errorBox) {
+            showToast(title, message);
+            return;
+        }
+        const strong =
+            errorBox.querySelector(
+                "strong"
+            );
+        /* « div > span » tombait sur le petit point rouge
+           (.modal-error-dot) : le message s'affichait hors de la boîte. */
+        const span =
+            errorBox.querySelector(
+                ":scope > div > span"
+            );
+        if (strong) {
+            strong.textContent =
+                title || "Erreur";
+        }
+        if (span) {
+            span.textContent =
+                message || "Une erreur est survenue.";
+        }
+        errorBox.classList.remove(
+            "hidden"
+        );
+    }
+    function clearModalError() {
+        const errorBox =
+            document.getElementById(
+                "modalError"
+            );
+        if (errorBox) {
+            errorBox.classList.add(
+                "hidden"
+            );
+        }
+    }
+    /* =====================================================
+       TELEGRAM PROFILE
+    ===================================================== */
+    /* =====================================================
+       PROFIL (nom + photo) — SOURCE UNIQUE
+       Priorité : Telegram > compte NexMarket > cache local.
+       Une valeur vide ne remplace jamais une valeur connue.
+    ===================================================== */
+    const PROFILE_CACHE_KEY = "nexmarket_profile_cache_v1";
+    const SPLASH_MIN_MS = 10000;
+    const SPLASH_MAX_MS = 60000;
+
+    function readProfileCache() {
+        try {
+            return JSON.parse(
+                localStorage.getItem(PROFILE_CACHE_KEY) || "null"
+            );
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function writeProfileCache(profile) {
+        try {
+            if (!profile?.telegram_id || !(profile.name || profile.photo_url)) {
+                return;
+            }
+
+            localStorage.setItem(
+                PROFILE_CACHE_KEY,
+                JSON.stringify({
+                    telegram_id: profile.telegram_id,
+                    first_name: profile.first_name,
+                    last_name: profile.last_name,
+                    username: profile.username,
+                    // une URL blob: n'a de sens que pour la session en cours
+                    photo_url: String(profile.photo_url || "").startsWith("blob:")
+                        ? ""
+                        : profile.photo_url
+                })
+            );
+        } catch (error) {
+            /* stockage indisponible : sans conséquence */
+        }
+    }
+
+    function getProfile() {
+        const tgUser = getTelegramUser() || {};
+        const user = state.user || {};
+        const stored = readProfileCache() || {};
+
+        // Le cache n'est utilisé que pour le même compte Telegram.
+        const cached =
+            !tgUser.id ||
+            !stored.telegram_id ||
+            Number(stored.telegram_id) === Number(tgUser.id)
+                ? stored
+                : {};
+
+        const first = String(
+            tgUser.first_name || user.first_name || cached.first_name || ""
+        ).trim();
+        const last = String(
+            tgUser.last_name || user.last_name || cached.last_name || ""
+        ).trim();
+        const username = String(
+            tgUser.username || user.username || cached.username || ""
+        ).trim();
+
+        const fullName = `${first} ${last}`.trim();
+        const name = fullName || (username ? `@${username}` : "");
+        const source = fullName || username;
+
+        const initials = source
+            ? source
+                  .split(/\s+/)
+                  .slice(0, 2)
+                  .map((word) => word.charAt(0).toUpperCase())
+                  .join("")
+            : "N";
+
+        // Après vérification (resolveAvatar) on ne garde que la photo
+        // qui s'affiche réellement ; avant, on prend la meilleure candidate.
+        const photo = state.photoChecked
+            ? state.resolvedPhoto || ""
+            : tgUser.photo_url ||
+              user.photo_url ||
+              cached.photo_url ||
+              "";
+
+        return {
+            telegram_id: tgUser.id || user.telegram_id || cached.telegram_id || null,
+            first_name: first,
+            last_name: last,
+            username,
+            name,
+            initials,
+            photo_url: photo
+        };
+    }
+
+    function canLoadImage(url, timeoutMs = 6000) {
+        return new Promise((resolve) => {
+            const image = new Image();
+
+            const timer = setTimeout(() => {
+                image.onload = image.onerror = null;
+                resolve(false);
+            }, timeoutMs);
+
+            image.onload = () => {
+                clearTimeout(timer);
+                resolve(true);
+            };
+
+            image.onerror = () => {
+                clearTimeout(timer);
+                resolve(false);
+            };
+
+            image.referrerPolicy = "no-referrer";
+            image.src = url;
+        });
+    }
+
+    /* Photo de secours : le serveur la demande à Telegram via le bot. */
+    async function fetchAvatarBlobUrl() {
+        const token = sessionStorage.getItem("nexmarket_session_token");
+
+        if (!token) {
+            return "";
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+
+        try {
+            const response = await fetch(
+                `${CONFIG.API_BASE_URL}/users/me/photo`,
+                {
+                    headers: { Authorization: `Bearer ${token}` },
+                    signal: controller.signal
+                }
+            );
+
+            if (!response.ok) {
+                return "";
+            }
+
+            const blob = await response.blob();
+
+            return blob.size ? URL.createObjectURL(blob) : "";
+        } catch (error) {
+            return "";
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    let avatarPromise = null;
+
+    function resolveAvatar() {
+        if (avatarPromise) {
+            return avatarPromise;
+        }
+
+        avatarPromise = (async () => {
+            const profile = getProfile();
+
+            if (profile.photo_url && (await canLoadImage(profile.photo_url))) {
+                state.resolvedPhoto = profile.photo_url;
+            } else {
+                if (!BACKEND.ready) {
+                    await Promise.race([
+                        wakeBackend(),
+                        new Promise((resolve) => setTimeout(resolve, 30000))
+                    ]);
+                }
+
+                state.resolvedPhoto = await fetchAvatarBlobUrl();
+            }
+
+            state.photoChecked = true;
+            updateTelegramProfile();
+        })();
+
+        return avatarPromise;
+    }
+
+    /* ---------------- splash ---------------- */
+    function setSplashStatus(text) {
+        const element = document.getElementById("splashStatus");
+
+        if (element) {
+            element.textContent = text;
+        }
+    }
+
+    function updateSplashUser() {
+        const box = document.getElementById("splashUser");
+
+        if (!box) {
+            return;
+        }
+
+        const profile = getProfile();
+        const nameElement = document.getElementById("splashName");
+        const letter = document.getElementById("splashAvatarLetter");
+        const image = document.getElementById("splashAvatar");
+
+        if (profile.name) {
+            nameElement.textContent = profile.name;
+            box.classList.remove("is-empty");
+        }
+
+        if (letter) {
+            letter.textContent = profile.initials;
+        }
+
+        if (image) {
+            if (profile.photo_url) {
+                image.onerror = () => {
+                    image.classList.add("is-hidden");
+                    image.removeAttribute("src");
+                };
+
+                if (image.getAttribute("src") !== profile.photo_url) {
+                    image.src = profile.photo_url;
+                }
+
+                image.classList.remove("is-hidden");
+            } else {
+                image.classList.add("is-hidden");
+                image.removeAttribute("src");
+            }
+        }
+    }
+
+    function updateTelegramProfile() {
+        const profile = getProfile();
+
+        if (profile.telegram_id) {
+            writeProfileCache(profile);
+        }
+
+        if (DOM.headerGreeting) {
+            DOM.headerGreeting.textContent =
+                `Bonjour ${profile.first_name || profile.name || "à vous"}`;
+        }
+
+        if (DOM.telegramAvatar) {
+            DOM.telegramAvatar.onerror = () => {
+                DOM.telegramAvatar.removeAttribute("src");
+                DOM.telegramAvatar.classList.add("hidden");
+                DOM.telegramAvatar.classList.remove("visible");
+                DOM.avatarLetter?.classList.remove("hidden");
+
+                // Lien Telegram inutilisable : photo de secours via le serveur.
+                if (!state.photoChecked) {
+                    resolveAvatar();
+                }
+            };
+
+            if (profile.photo_url) {
+                if (DOM.telegramAvatar.getAttribute("src") !== profile.photo_url) {
+                    DOM.telegramAvatar.src = profile.photo_url;
+                }
+
+                DOM.telegramAvatar.classList.remove("hidden");
+                DOM.telegramAvatar.classList.add("visible");
+                DOM.avatarLetter?.classList.add("hidden");
+            } else {
+                DOM.telegramAvatar.removeAttribute("src");
+                DOM.telegramAvatar.classList.add("hidden");
+                DOM.telegramAvatar.classList.remove("visible");
+                DOM.avatarLetter?.classList.remove("hidden");
+            }
+        }
+
+        if (DOM.avatarLetter) {
+            DOM.avatarLetter.textContent = profile.initials;
+        }
+
+        updateSplashUser();
+    }
+
+    /* =====================================================
+       LOAD FAVORITES
+    ===================================================== */
+    async function loadFavorites() {
+        if (!state.user) {
+            state.favorites = [];
+            return [];
+        }
+        try {
+            const data =
+                await apiRequest(
+                    "/favorites"
+                );
+            state.favorites =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.favorites ||
+                        []
+                    );
+            return state.favorites;
+        } catch (error) {
+            console.warn(
+                "Favorites:",
+                error.message
+            );
+            state.favorites = [];
+            return [];
+        }
+    }
+    /* =====================================================
+       LOAD MY LISTINGS
+    ===================================================== */
+    async function loadMyListings() {
+        if (!state.user) {
+            state.myListings = [];
+            return [];
+        }
+        try {
+            const data =
+                await apiRequest(
+                    "/listings/mine/all"
+                );
+            const raw =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.listings ||
+                        []
+                    );
+            state.myListings =
+                raw.map(normalizeListing);
+            return state.myListings;
+        } catch (error) {
+            console.warn(
+                "Mes annonces:",
+                error.message
+            );
+            state.myListings = [];
+            return [];
+        }
+    }
+    /* =====================================================
+       PAGE LOADING
+    ===================================================== */
+    function showLoading(
+        message = "Chargement..."
+    ) {
+        if (!DOM.pageContainer) {
+            return;
+        }
+        DOM.pageContainer.innerHTML = `
+            <div class="loading-state">
+                <div class="loading-spinner"></div>
+                <p>${escapeHTML(message)}</p>
+            </div>
+        `;
+    }
+    function showEmpty(
+        title,
+        message,
+        icon = ICONS.channel
+    ) {
+        return `
+            <div class="empty-state">
+                <div class="empty-state-icon">
+                    ${icon}
+                </div>
+                <h3>
+                    ${escapeHTML(title)}
+                </h3>
+                <p>
+                    ${escapeHTML(message)}
+                </p>
+            </div>
+        `;
+    }
+    /* =====================================================
+       PAGE HOME
+    ===================================================== */
+    /* =====================================================
+       STATISTIQUES PUBLIQUES (confiance) — compteurs animés
+    ===================================================== */
+    const STATS_CACHE_KEY = "nexmarket_public_stats_v1";
+
+    const TRUST_ICONS = {
+        shield: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>`,
+        store: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"/><path d="M5 12v8h14v-8"/></svg>`,
+        sync: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-15-6.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 15 6.7L21 16"/><path d="M16 16h5v5"/></svg>`
+    };
+
+    function readStatsCache() {
+        try {
+            return JSON.parse(localStorage.getItem(STATS_CACHE_KEY) || "null");
+        } catch (error) {
+            return null;
+        }
+    }
+
+    async function loadPublicStats() {
+        try {
+            const data = await apiRequest("/stats/public");
+
+            try {
+                localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(data));
+            } catch (error) {
+                /* stockage indisponible : sans conséquence */
+            }
+
+            return data;
+        } catch (error) {
+            return readStatsCache();
+        }
+    }
+
+    function renderTrustSection() {
+        const marquee = [
+            "Fonds bloqués jusqu'à la livraison",
+            "Vérification de chaque canal",
+            "Support administrateur",
+            "Paiements Mobile Money sécurisés",
+            "Litiges arbitrés"
+        ];
+
+        const track = marquee
+            .concat(marquee)
+            .map((text) => `<span>${escapeHTML(text)}</span>`)
+            .join("");
+
+        const card = (index, icon, key, label) => `
+            <div class="trust-card" style="--i:${index}">
+                <div class="trust-icon">${icon}</div>
+                <strong class="trust-number" data-stat="${key}">0</strong>
+                <span class="trust-label">${label}</span>
+            </div>
+        `;
+
+        return `
+            <section class="trust-section" id="trustSection">
+                <div class="trust-orbs" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                </div>
+                <div class="trust-head">
+                    <span class="live-pill"><i></i> EN DIRECT</span>
+                    <h2>NexMarket en chiffres</h2>
+                    <p>Des transactions réelles, protégées par séquestre.</p>
+                </div>
+                <div class="trust-grid">
+                    ${card(0, TRUST_ICONS.shield, "completed_sales", "Ventes réalisées")}
+                    ${card(1, TRUST_ICONS.store, "available_channels", "Canaux disponibles")}
+                    ${card(2, TRUST_ICONS.sync, "active_transactions", "Transactions en cours")}
+                </div>
+                <div class="trust-strip">
+                    <div><b class="trust-number" data-stat="members">0</b><span>membres</span></div>
+                    <div><b class="trust-number" data-stat="volume" data-format="compact">0</b><span>XAF échangés</span></div>
+                </div>
+                <div class="trust-marquee" aria-hidden="true">
+                    <div class="trust-marquee-track">${track}</div>
+                </div>
+            </section>
+        `;
+    }
+
+    function formatStatValue(element, value) {
+        return element.dataset.format === "compact"
+            ? formatCompact(value)
+            : formatNumber(Math.round(value));
+    }
+
+    function countUp(element, target) {
+        const from = Number(element.dataset.value || 0);
+        const to = Number(target) || 0;
+
+        element.dataset.value = String(to);
+
+        const reduced = window.matchMedia?.(
+            "(prefers-reduced-motion: reduce)"
+        )?.matches;
+
+        if (reduced || from === to) {
+            element.textContent = formatStatValue(element, to);
+            return;
+        }
+
+        const duration = 1700;
+        const started = performance.now();
+
+        element.classList.add("bump");
+
+        const step = (now) => {
+            const progress = Math.min(1, (now - started) / duration);
+            /* easeOutExpo : démarre vite, ralentit à la fin */
+            const eased = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
+
+            element.textContent = formatStatValue(
+                element,
+                from + (to - from) * eased
+            );
+
+            if (progress < 1) {
+                requestAnimationFrame(step);
+            } else {
+                setTimeout(() => element.classList.remove("bump"), 500);
+            }
+        };
+
+        requestAnimationFrame(step);
+    }
+
+    let trustTimer = null;
+
+    function initTrustSection() {
+        const section = document.getElementById("trustSection");
+
+        if (!section) {
+            return;
+        }
+
+        const apply = (data) => {
+            if (!data) {
+                return;
+            }
+
+            section.querySelectorAll("[data-stat]").forEach((element) => {
+                countUp(element, data[element.dataset.stat] || 0);
+            });
+        };
+
+        const start = async () => {
+            section.classList.add("in-view");
+            apply(await loadPublicStats());
+
+            /* Mise à jour discrète toutes les 30 s tant que la page est ouverte. */
+            clearInterval(trustTimer);
+            trustTimer = setInterval(async () => {
+                if (
+                    !document.getElementById("trustSection") ||
+                    document.visibilityState !== "visible"
+                ) {
+                    return;
+                }
+
+                apply(await loadPublicStats());
+            }, 30000);
+        };
+
+        if (!("IntersectionObserver" in window)) {
+            start();
+            return;
+        }
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries.some((entry) => entry.isIntersecting)) {
+                    observer.disconnect();
+                    start();
+                }
+            },
+            { threshold: 0.2 }
+        );
+
+        observer.observe(section);
+    }
+
+    async function renderHome() {
+        state.currentPage = "home";
+if (!DOM.pageContainer) {
+            return;
+        }
+        DOM.pageContainer.innerHTML = `
+            <section class="home-page">
+                <div class="home-hero">
+                    <div class="hero-copy">
+                        <span class="hero-eyebrow">
+                            NEXMARKET
+                        </span>
+                        <h1>
+                            Trouve ton prochain
+                            <span>canal Telegram.</span>
+                        </h1>
+                        <p>
+                            Achète et vends des canaux
+                            Telegram dans un espace pensé
+                            pour des transactions sécurisées.
+                        </p>
+                    </div>
+                    <div class="hero-actions">
+                        <button
+                            class="primary-action"
+                            type="button"
+                            data-action="buy"
+                        >
+                            ${ICONS.cart}
+                            <span>
+                                Acheter un canal
+                            </span>
+                        </button>
+                        <button
+                            class="secondary-action"
+                            type="button"
+                            data-action="sell"
+                        >
+                            ${ICONS.sell}
+                            <span>
+                                Vendre mon canal
+                            </span>
+                        </button>
+                    </div>
+                </div>
+                <div class="section-header">
+                    <div>
+                        <span class="section-kicker">
+                            MARKETPLACE
+                        </span>
+                        <h2>
+                            Canaux disponibles
+                        </h2>
+                    </div>
+                    <button
+                        class="text-button"
+                        type="button"
+                        data-action="buy"
+                    >
+                        Voir tout
+                        ${ICONS.arrow}
+                    </button>
+                </div>
+                <div
+                    class="listing-feed shop-grid"
+                    id="homeListingFeed"
+                >
+                    ${renderShopSkeleton(4)}
+                </div>
+                ${renderTrustSection()}
+            </section>
+        `;
+        bindPageActions();
+        initTrustSection();
+    
+        /* Les annonces arrivent ensuite, sans bloquer l'affichage. */
+        await loadListings();
+
+        if (state.currentPage !== "home") {
+            return;
+        }
+
+        const feed = document.getElementById("homeListingFeed");
+
+        if (feed) {
+            feed.innerHTML = renderListingFeed(state.listings.slice(0, 8));
+            bindPageActions();
+        }
+    }
+    /* =====================================================
+       LISTING FEED
+    ===================================================== */
+    function renderListingFeed(listings) {
+        if (state.listingsError) {
+            return `
+                <div class="shop-error">
+                    <strong>Impossible de charger les canaux</strong>
+                    <p>${escapeHTML(state.listingsError)}</p>
+                    <button
+                        class="primary-action"
+                        type="button"
+                        data-action="retry-listings"
+                    >
+                        Réessayer
+                    </button>
+                </div>
+            `;
+        }
+
+        if (
+            !Array.isArray(listings) ||
+            listings.length === 0
+        ) {
+            return showEmpty(
+                "Aucun canal disponible",
+                "Les nouvelles annonces apparaîtront ici.",
+                ICONS.channel
+            );
+        }
+        return listings
+            .map(renderListing)
+            .join("");
+    }
+    /* =====================================================
+       LISTING
+    ===================================================== */
+    function formatCompact(value) {
+        const number = Number(value);
+
+        if (!Number.isFinite(number)) {
+            return "—";
+        }
+
+        if (number >= 1000000) {
+            return `${(number / 1000000).toFixed(1).replace(".", uiLocale() === "en-US" ? "." : ",")} M`;
+        }
+
+        if (number >= 1000) {
+            return `${(number / 1000).toFixed(1).replace(".", uiLocale() === "en-US" ? "." : ",")} K`;
+        }
+
+        return String(number);
+    }
+
+    function listingInitials(title) {
+        const words = String(title || "NM")
+            .replace(/[^\p{L}\p{N} ]/gu, " ")
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean);
+
+        return (
+            (words[0]?.[0] || "N") + (words[1]?.[0] || words[0]?.[1] || "M")
+        ).toUpperCase();
+    }
+
+    function renderSellerLine(seller) {
+        if (!seller) {
+            return "";
+        }
+
+        const rating =
+            seller.rating !== null && seller.rating !== undefined
+                ? `<b>★ ${String(seller.rating).replace(".", ",")}</b> (${seller.reviews})`
+                : "Nouveau vendeur";
+
+        const sales = seller.sales
+            ? ` · ${seller.sales} vente${seller.sales > 1 ? "s" : ""}`
+            : "";
+
+        return `<div class="shop-seller">${rating}${sales}</div>`;
+    }
+
+    function renderShopSkeleton(count = 4) {
+        return Array.from({ length: count })
+            .map(
+                () => `
+                    <div class="shop-card shop-skeleton" aria-hidden="true">
+                        <div class="shop-cover"></div>
+                        <div class="shop-body">
+                            <span class="sk-line w70"></span>
+                            <span class="sk-line w40"></span>
+                            <span class="sk-line w90"></span>
+                            <span class="sk-line w50"></span>
+                        </div>
+                    </div>
+                `
+            )
+            .join("");
+    }
+
+    function renderListing(listing) {
+        const id = listing.id;
+        const title = listing.title || listing.name || "Canal Telegram";
+        const username = listing.username
+            ? `@${String(listing.username).replace(/^@/, "")}`
+            : listing.channel?.is_private
+            ? "Canal privé"
+            : "Canal Telegram";
+        const category = listing.category || "";
+        const subscribers = listing.subscribers_count;
+        const price = listing.price ?? listing.locked_price ?? 0;
+        const currency =
+            listing.currency || state.user?.currency || "XAF";
+        const photo =
+            listing.photo_url || listing.channel?.photo_url || "";
+        const verified = Boolean(
+            listing.telegram_verified && listing.bot_is_admin
+        );
+        const isFavorite = state.favorites.some(
+            (favorite) => Number(favorite.listing_id) === Number(id)
+        );
+        const perThousand = listing.price_per_1k;
+
+        return `
+            <article
+                class="shop-card"
+                data-action="view-listing"
+                data-listing-id="${escapeHTML(id)}"
+            >
+                <div class="shop-cover">
+                    ${
+                        photo
+                            ? `<img class="shop-cover-img" src="${escapeHTML(photo)}" alt="${escapeHTML(title)}" loading="lazy">`
+                            : ""
+                    }
+                    <div class="shop-cover-fallback">
+                        <span>${escapeHTML(listingInitials(title))}</span>
+                    </div>
+                    <div class="shop-badges">
+                        ${
+                            verified
+                                ? '<span class="shop-badge verified">✔ Vérifié</span>'
+                                : ""
+                        }
+                        ${
+                            category
+                                ? `<span class="shop-badge">${escapeHTML(category)}</span>`
+                                : ""
+                        }
+                    </div>
+                    <button
+                        class="favorite-button shop-fav ${isFavorite ? "active" : ""}"
+                        type="button"
+                        data-action="favorite"
+                        data-listing-id="${escapeHTML(id)}"
+                        aria-label="Favoris"
+                    >
+                        ${ICONS.heart}
+                    </button>
+                </div>
+                <div class="shop-body">
+                    <h3 class="shop-title">${escapeHTML(title)}</h3>
+                    <span class="shop-username">${escapeHTML(username)}</span>
+                    <div class="shop-stats">
+                        <span>
+                            ${ICONS.user}
+                            ${
+                                subscribers !== null && subscribers !== undefined
+                                    ? formatCompact(subscribers)
+                                    : "—"
+                            }
+                            abonnés
+                        </span>
+                        ${
+                            perThousand
+                                ? `<span>≈ ${formatNumber(perThousand)} / 1K</span>`
+                                : ""
+                        }
+                    </div>
+                    ${renderSellerLine(listing.seller)}
+                    <div class="shop-footer">
+                        <div class="shop-price">
+                            <small>Prix</small>
+                            <strong>${formatMoney(price, currency)}</strong>
+                        </div>
+                        <span class="shop-cta">Voir ${ICONS.arrow}</span>
+                    </div>
+                </div>
+            </article>
+        `;
+    }
+
+    /* « Voir le canal » : ouvre le canal DANS Telegram (pas dans un navigateur). */
+    document.addEventListener("click", (event) => {
+        const link = event.target.closest?.("[data-visit-channel]");
+
+        if (!link) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const url = link.dataset.visitChannel;
+        const webApp = window.Telegram?.WebApp;
+
+        if (webApp?.openTelegramLink) {
+            webApp.openTelegramLink(url);
+        } else {
+            window.open(url, "_blank", "noopener");
+        }
+    });
+
+    /* Photo de canal introuvable : on garde les initiales (sans onerror inline). */
+    document.addEventListener(
+        "error",
+        (event) => {
+            const image = event.target;
+
+            if (
+                image instanceof HTMLImageElement &&
+                (image.classList.contains("shop-cover-img") ||
+                    image.closest(".profile-avatar-large"))
+            ) {
+                image.remove();
+            }
+        },
+        true
+    );
+
+    /* =====================================================
+       PAGE BUY
+    ===================================================== */
+    /* =====================================================
+       CATEGORY BAR
+    ===================================================== */
+    const MARKET_CATEGORIES = [
+        "News",
+        "Sport",
+        "Entertainment",
+        "Games",
+        "Education",
+        "Business",
+        "Tech",
+        "Commerce",
+        "Music",
+        "Creation",
+        "Community",
+        "Other"
+    ];
+    function renderCategoryBar() {
+        const categories = [
+            "all",
+            ...MARKET_CATEGORIES
+        ];
+        return `
+            <div class="category-bar-wrap">
+                <div class="category-bar-header">
+                    <span class="section-kicker">
+                        CATÉGORIES
+                    </span>
+                    <span class="category-bar-hint">
+                        Glisse pour voir plus
+                    </span>
+                </div>
+                <div
+                    class="category-bar"
+                    role="tablist"
+                    aria-label="Catégories de canaux"
+                >
+                    ${categories.map(category => {
+                        const active =
+                            state.selectedCategory === category;
+                        const label =
+                            category === "all"
+                                ? "Tous"
+                                : category;
+                        return `
+                            <button
+                                class="category-bar-item ${active ? "active" : ""}"
+                                type="button"
+                                data-category-select="${escapeHTML(category)}"
+                                aria-selected="${active ? "true" : "false"}"
+                                role="tab"
+                            >
+                                ${escapeHTML(label)}
+                            </button>
+                        `;
+                    }).join("")}
+                </div>
+            </div>
+        `;
+    }
+    async function renderBuy() {
+        state.currentPage = "buy";
+if (!DOM.pageContainer) {
+            return;
+        }
+        DOM.pageContainer.innerHTML = `
+            <section class="buy-page">
+                <div class="page-heading">
+                    <span class="section-kicker">
+                        MARKETPLACE
+                    </span>
+                    <h1>
+                        Acheter
+                    </h1>
+                    <p>
+                        Trouve un canal Telegram
+                        correspondant à tes critères.
+                    </p>
+                </div>
+                <div class="search-box">
+                    <span class="search-icon">
+                        ${ICONS.search}
+                    </span>
+                    <input
+                        id="marketSearchInput"
+                        type="search"
+                        placeholder="Nom, @username, catégorie..."
+                        value="${escapeHTML(
+                            state.searchQuery
+                        )}"
+                        autocomplete="off"
+                    >
+                </div>
+                ${renderCategoryBar()}
+                <div class="filter-row">
+                    <button
+                        class="filter-button"
+                        type="button"
+                        data-action="filters"
+                    >
+                        ${ICONS.filter}
+                        Filtres
+                    </button>
+                    <button
+                        class="filter-chip ${
+                            state.selectedCategory !== "all"
+                                ? "active"
+                                : ""
+                        }"
+                        type="button"
+                        data-filter="category"
+                    >
+                        ${
+                            state.selectedCategory === "all"
+                                ? "Catégorie"
+                                : escapeHTML(
+                                    state.selectedCategory
+                                )
+                        }
+                    </button>
+                </div>
+                                <div class="sort-row" role="group" aria-label="Trier">
+                    ${[
+                        ["recent", "Récents"],
+                        ["price_asc", "Prix ↑"],
+                        ["price_desc", "Prix ↓"],
+                        ["subs_desc", "Abonnés"]
+                    ]
+                        .map(
+                            ([value, label]) => `
+                                <button
+                                    class="sort-chip ${state.sort === value ? "active" : ""}"
+                                    type="button"
+                                    data-sort="${value}"
+                                >${label}</button>
+                            `
+                        )
+                        .join("")}
+                </div>
+                <div class="listing-count" id="buyListingCount">
+                    Chargement…
+                </div>
+                <div class="listing-feed shop-grid" id="buyListingFeed"
+                    id="buyListingFeed"
+                >
+                    ${renderShopSkeleton(4)}
+                </div>
+            </section>
+        `;
+        bindBuyActions();
+    
+        await refreshBuyFeed();
+    }
+
+    async function refreshBuyFeed() {
+        const feed = document.getElementById("buyListingFeed");
+        const count = document.getElementById("buyListingCount");
+
+        if (feed) {
+            feed.innerHTML = renderShopSkeleton(4);
+        }
+
+        await Promise.allSettled([loadListings(), loadFavorites()]);
+
+        if (state.currentPage !== "buy") {
+            return;
+        }
+
+        if (feed) {
+            feed.innerHTML = renderListingFeed(state.listings);
+        }
+
+        if (count) {
+            const total = state.listings.length;
+            count.textContent = state.listingsError
+                ? ""
+                : `${total} annonce${total > 1 ? "s" : ""}`;
+        }
+
+        bindPageActions();
+    }
+    /* =====================================================
+       SEARCH
+    ===================================================== */
+    function setupSearchInput() {
+        const input =
+            document.getElementById(
+                "marketSearchInput"
+            );
+        if (!input) {
+            return;
+        }
+        let timer = null;
+        input.addEventListener(
+            "input",
+            event => {
+                clearTimeout(timer);
+                timer =
+                    setTimeout(
+                        async () => {
+                            state.searchQuery =
+                                event.target.value;
+                            await refreshBuyFeed();
+                        },
+                        350
+                    );
+            }
+        );
+    }
+    /* =====================================================
+       FILTERS
+    ===================================================== */
+    function openFilters() {
+        openModal(`
+            <div class="modal-header-content">
+                <div>
+                    <span class="section-kicker">
+                        FILTRES
+                    </span>
+                    <h2>
+                        Affiner la recherche
+                    </h2>
+                </div>
+            </div>
+            <div class="filter-form">
+                <label>
+                    Catégorie
+                    <select
+                        id="filterCategory"
+                    >
+                        <option value="all">
+                            Toutes
+                        </option>
+                        <option value="News">
+                            News
+                        </option>
+                        <option value="Sport">
+                            Sport
+                        </option>
+                        <option value="Entertainment">
+                            Entertainment
+                        </option>
+                        <option value="Games">
+                            Games
+                        </option>
+                        <option value="Education">
+                            Education
+                        </option>
+                        <option value="Business">
+                            Business
+                        </option>
+                        <option value="Tech">
+                            Tech
+                        </option>
+                        <option value="Commerce">
+                            Commerce
+                        </option>
+                        <option value="Music">
+                            Music
+                        </option>
+                        <option value="Creation">
+                            Creation
+                        </option>
+                        <option value="Community">
+                            Community
+                        </option>
+                        <option value="Other">
+                            Other
+                        </option>
+                    </select>
+                </label>
+                <div class="modal-actions">
+                    <button
+                        type="button"
+                        class="secondary-action"
+                        data-action="reset-filters"
+                    >
+                        Réinitialiser
+                    </button>
+                    <button
+                        type="button"
+                        class="primary-action"
+                        data-action="apply-filters"
+                    >
+                        Appliquer
+                    </button>
+                </div>
+            </div>
+        `);
+        const category =
+            document.getElementById(
+                "filterCategory"
+            );
+        if (category) {
+            category.value =
+                state.selectedCategory;
+        }
+        document
+            .querySelector(
+                '[data-action="apply-filters"]'
+            )
+            ?.addEventListener(
+                "click",
+                applyFilters
+            );
+        document
+            .querySelector(
+                '[data-action="reset-filters"]'
+            )
+            ?.addEventListener(
+                "click",
+                resetFilters
+            );
+    }
+    async function applyFilters() {
+        const category =
+            document.getElementById(
+                "filterCategory"
+            );
+        state.selectedCategory =
+            category?.value ||
+            "all";
+        closeModal();
+        await renderBuy();
+    }
+    async function resetFilters() {
+        state.selectedCategory = "all";
+        state.selectedSubscribers = "all";
+        state.selectedPrice = "all";
+        closeModal();
+        await renderBuy();
+    }
+    /* =====================================================
+       LOAD LISTINGS
+    ===================================================== */
+    async function loadListings() {
+        try {
+            const params =
+                new URLSearchParams();
+            if (state.searchQuery) {
+                params.set(
+                    "search",
+                    state.searchQuery
+                );
+            }
+            if (
+                state.selectedCategory !==
+                "all"
+            ) {
+                params.set(
+                    "category",
+                    state.selectedCategory
+                );
+            }
+            if (state.sort && state.sort !== "recent") {
+                params.set("sort", state.sort);
+            }
+
+            const query =
+                params.toString();
+            const endpoint =
+                query
+                    ? `/listings?${query}`
+                    : "/listings";
+            const data =
+                await apiRequest(
+                    endpoint
+                );
+            const rawListings =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.listings ||
+                        data.results ||
+                        []
+                    );
+            state.listings =
+                rawListings.map(
+                    normalizeListing
+                );
+            state.listingsError = "";
+            return state.listings;
+        } catch (error) {
+            console.error(
+                "Erreur chargement annonces:",
+                error
+            );
+            state.listings = [];
+            state.listingsError =
+                String(error?.message || "") ||
+                "Le serveur ne répond pas. Réessaie dans un instant.";
+            return [];
+        }
+    }
+    /* =====================================================
+       NORMALISATION LISTING
+    ===================================================== */
+    function normalizeListing(
+        listing
+    ) {
+        if (!listing) {
+            return {};
+        }
+        const channel =
+            listing.channel ||
+            {};
+        return {
+            ...listing,
+            id:
+                listing.id ??
+                listing.listing_id,
+            channel_id:
+                listing.channel_id ??
+                channel.id,
+            title:
+                listing.title ||
+                listing.name ||
+                channel.title ||
+                channel.name ||
+                "Canal Telegram",
+            name:
+                listing.name ||
+                listing.title ||
+                channel.name ||
+                channel.title ||
+                "Canal Telegram",
+            username:
+                listing.username ||
+                channel.username ||
+                "",
+            description:
+                listing.description ||
+                channel.description ||
+                "",
+            photo_url:
+                listing.photo_url ||
+                channel.photo_url ||
+                "",
+            category:
+                listing.category ||
+                channel.category ||
+                "Other",
+            subscribers_count:
+                listing.subscribers_count ??
+                channel.subscribers_count ??
+                0,
+            telegram_verified:
+                listing.telegram_verified ??
+                channel.telegram_verified ??
+                false,
+            bot_is_admin:
+                listing.bot_is_admin ??
+                channel.bot_is_admin ??
+                false,
+            seller_is_admin:
+                listing.seller_is_admin ??
+                channel.seller_is_admin ??
+                false,
+            price:
+                listing.price ??
+                listing.locked_price ??
+                0,
+            currency:
+                listing.currency ||
+                "XAF"
+        };
+    }
+    /* =====================================================
+       AUTHENTIFICATION TELEGRAM
+    ===================================================== */
+    /* =====================================================
+       ACCÈS : bot démarré + canal NEXA rejoint (obligatoire)
+    ===================================================== */
+    const ACCESS_CODES = ["bot_not_started", "channel_required"];
+    const SUPPORT_GROUP_URL = "https://t.me/+t2Cb3lYlg_RmMjg0";
+    const FALLBACK_BOT_URL = "https://t.me/NexaMarketShopbot?start=app";
+    const FALLBACK_CHANNEL_URL = "https://t.me/Nexa_CG";
+    let accessBlockedError = null;
+
+    function openTelegramTarget(url) {
+        const tg = window.Telegram?.WebApp;
+
+        try {
+            if (tg?.openTelegramLink) {
+                tg.openTelegramLink(url);
+                return;
+            }
+        } catch (error) {
+            /* on retombe sur window.open */
+        }
+
+        window.open(url, "_blank");
+    }
+
+    function showAccessGate(info) {
+        const code = info?.code || "bot_not_started";
+        const botUrl = info?.bot_url || FALLBACK_BOT_URL;
+        const channelUrl = info?.channel_url || FALLBACK_CHANNEL_URL;
+
+        document.getElementById("accessGate")?.remove();
+
+        const gate = document.createElement("div");
+        gate.id = "accessGate";
+        gate.className = "access-gate";
+        gate.setAttribute("role", "dialog");
+        gate.setAttribute("aria-modal", "true");
+        gate.innerHTML = `
+            <div class="access-gate-card">
+                <div class="access-gate-icon">🔒</div>
+                <h2 class="access-gate-title"></h2>
+                <p class="access-gate-text"></p>
+                <ol class="access-gate-steps">
+                    <li data-step="bot">Démarre le bot NexMarket</li>
+                    <li data-step="channel">Rejoins le canal NEXA</li>
+                    <li>Reviens ici et appuie sur « J'ai terminé »</li>
+                </ol>
+                <button type="button" class="access-gate-btn primary" data-act="bot">🤖 Démarrer le bot</button>
+                <button type="button" class="access-gate-btn" data-act="channel">📢 Rejoindre le canal NEXA</button>
+                <button type="button" class="access-gate-btn ghost" data-act="retry">✅ J'ai terminé, réessayer</button>
+            </div>`;
+
+        gate.querySelector(".access-gate-title").textContent =
+            code === "channel_required"
+                ? "Rejoins le canal NEXA"
+                : "Démarre d'abord le bot";
+        gate.querySelector(".access-gate-text").textContent =
+            info?.message ||
+            "Pour utiliser NexMarket, démarre le bot puis rejoins notre canal.";
+
+        gate.addEventListener("click", (event) => {
+            const action = event.target.closest("[data-act]")?.dataset.act;
+
+            if (action === "bot") {
+                openTelegramTarget(botUrl);
+            } else if (action === "channel") {
+                openTelegramTarget(channelUrl);
+            } else if (action === "retry") {
+                window.location.reload();
+            }
+        });
+
+        document.body.appendChild(gate);
+    }
+
+    async function authenticateTelegram() {
+        const initData =
+            getTelegramInitData();
+        if (!initData) {
+            throw new Error(
+                "NexMarket doit être ouvert depuis Telegram."
+            );
+        }
+        /* Déjà refusé pendant cette ouverture : inutile de redemander. */
+        if (accessBlockedError) {
+            throw accessBlockedError;
+        }
+        /* Route d'authentification Telegram du backend. */
+        let result;
+        try {
+            result = await apiRequest(
+                "/auth/telegram",
+                {
+                    method: "POST",
+                    body: JSON.stringify({
+                        init_data: initData
+                    })
+                }
+            );
+        } catch (error) {
+            if (ACCESS_CODES.includes(error?.code)) {
+                accessBlockedError = error;
+                sessionStorage.removeItem("nexmarket_session_token");
+                showAccessGate(error.accessInfo);
+            }
+            throw error;
+        }
+        const sessionToken =
+            result?.session_token ||
+            result?.access_token ||
+            result?.token ||
+            result?.jwt ||
+            "";
+        if (!sessionToken) {
+            throw new Error(
+                "Le backend n'a pas fourni de jeton de session."
+            );
+        }
+        sessionStorage.setItem(
+            "nexmarket_session_token",
+            sessionToken
+        );
+
+        /* La réponse de connexion contient déjà l'utilisateur (dont le
+           Nexa ID) : gardé comme secours si /users/me est lent ou échoue. */
+        state.authUser = result?.user || null;
+
+        return result;
+    }
+    /* =====================================================
+       LOAD USER
+    ===================================================== */
+    const USER_CACHE_KEY = "nexmarket_user_cache_v1";
+
+    function readUserCache(telegramId) {
+        try {
+            const cached = JSON.parse(
+                localStorage.getItem(USER_CACHE_KEY) || "null"
+            );
+
+            return cached &&
+                Number(cached.telegram_id) === Number(telegramId)
+                ? cached
+                : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function writeUserCache(user) {
+        try {
+            if (user?.nexa_id) {
+                localStorage.setItem(
+                    USER_CACHE_KEY,
+                    JSON.stringify({
+                        telegram_id: user.telegram_id,
+                        nexa_id: user.nexa_id,
+                        currency: user.currency,
+                        display_currency: user.display_currency,
+                        language: user.language
+                    })
+                );
+            }
+        } catch (error) {
+            /* stockage indisponible : sans conséquence */
+        }
+    }
+
+    function updateNexaIdDisplay() {
+        document
+            .querySelectorAll(".wallet-id b")
+            .forEach((element) => {
+                element.textContent = state.user?.nexa_id || "En cours…";
+            });
+    }
+
+    async function loadCurrentUser() {
+        const telegramUser =
+            getTelegramUser() || {};
+        if (!telegramUser.id) {
+            state.user = null;
+            return null;
+        }
+        let backendUser = {};
+        /*
+         * Si aucune session utilisateur n'existe encore,
+         * on authentifie la Mini App avec Telegram initData.
+         */
+        if (!sessionStorage.getItem("nexmarket_session_token")) {
+            try {
+                await authenticateTelegram();
+            } catch (error) {
+                console.warn(
+                    "Authentification Telegram:",
+                    error.message
+                );
+            }
+        }
+        /* Récupération du compte avec le JWT Bearer. */
+        try {
+            const data =
+                await apiRequest(
+                    "/users/me"
+                );
+            backendUser =
+                data?.user ||
+                data ||
+                {};
+        } catch (error) {
+            console.warn(
+                "Utilisateur /users/me:",
+                error.message
+            );
+            /*
+             * Si la session précédente est expirée, on la recrée
+             * une fois avec Telegram puis on réessaie /users/me.
+             */
+            sessionStorage.removeItem(
+                "nexmarket_session_token"
+            );
+            try {
+                await authenticateTelegram();
+                const data =
+                    await apiRequest(
+                        "/users/me"
+                    );
+                backendUser =
+                    data?.user ||
+                    data ||
+                    {};
+            } catch (authError) {
+                console.warn(
+                    "Réauthentification NexMarket:",
+                    authError.message
+                );
+            }
+        }
+        /* /users/me indisponible : on prend l'utilisateur de la connexion. */
+        if (!backendUser?.nexa_id && state.authUser) {
+            backendUser = { ...state.authUser, ...backendUser };
+        }
+
+        state.user = {
+            ...telegramUser,
+            ...backendUser,
+            telegram_id:
+                backendUser.telegram_id ||
+                telegramUser.id,
+            // Avant : `...backendUser` (first_name: null) écrasait le vrai
+            // prénom venu de Telegram.
+            first_name:
+                telegramUser.first_name ||
+                backendUser.first_name ||
+                "",
+            last_name:
+                telegramUser.last_name ||
+                backendUser.last_name ||
+                "",
+            username:
+                telegramUser.username ||
+                backendUser.username ||
+                "",
+            nexa_id:
+                backendUser.nexa_id ||
+                readUserCache(telegramUser.id)?.nexa_id ||
+                "",
+            photo_url:
+                telegramUser.photo_url ||
+                backendUser.photo_url ||
+                "",
+            // Devise du COMPTE (argent réel) : XAF. La préférence d'affichage
+            // (EUR / USD) est gardée à part dans display_currency.
+            currency:
+                backendUser.currency ||
+                "XAF",
+            display_currency:
+                String(backendUser.preferred_currency || "XAF").toUpperCase(),
+            language:
+                backendUser.language ||
+                "fr"
+        };
+        // Première utilisation sur cet appareil : on reprend la langue du compte.
+        if (
+            window.NexI18n &&
+            !window.NexI18n.stored() &&
+            state.user.language === "en"
+        ) {
+            window.NexI18n.setLang("en");
+        }
+        writeUserCache(state.user);
+        updateTelegramProfile();
+        updateNexaIdDisplay();
+        return state.user;
+    }
+    /* =====================================================
+       LOAD WALLET
+    ===================================================== */
+    async function loadWallet() {
+        /* Il suffit d'avoir une session : le portefeuille ne doit pas
+           attendre le chargement du profil. */
+        if (!sessionStorage.getItem("nexmarket_session_token")) {
+            return null;
+        }
+        try {
+            const data = await apiRequest("/wallet/balance");
+            state.wallet =
+                data?.wallet ||
+                data?.balance ||
+                data;
+            return state.wallet;
+        } catch (error) {
+            console.warn(
+                "Portefeuille:",
+                error.message
+            );
+            state.wallet = null;
+            return null;
+        }
+    }
+    /* =====================================================
+       LOAD TRANSACTIONS
+    ===================================================== */
+    async function loadTransactions() {
+        if (!state.user) {
+            state.transactions = [];
+            return [];
+        }
+        try {
+            const data =
+                await apiRequest(
+                    "/transactions/mine"
+                );
+            state.transactions =
+                Array.isArray(data)
+                    ? data
+                    : (
+                        data.items ||
+                        data.transactions ||
+                        []
+                    );
+            return state.transactions;
+        } catch (error) {
+            console.warn(
+                "Transactions:",
+                error.message
+            );
+            state.transactions = [];
+            return [];
+        }
+    }
+    /* =====================================================
+       LISTING DETAILS
+    ===================================================== */
+    /* Visionneuse plein écran : flèches, balayage et fermeture. */
+    function openImageViewer(urls, startIndex) {
+        if (!urls.length) {
+            return;
+        }
+        let index = Math.max(0, Math.min(startIndex, urls.length - 1));
+        const overlay = document.createElement("div");
+        overlay.className = "image-viewer";
+        overlay.innerHTML = `
+            <button type="button" class="iv-close" aria-label="Fermer">×</button>
+            <button type="button" class="iv-nav iv-prev" aria-label="Précédente">‹</button>
+            <img class="iv-img" alt="">
+            <button type="button" class="iv-nav iv-next" aria-label="Suivante">›</button>
+            <div class="iv-count"></div>`;
+        document.body.appendChild(overlay);
+        const img = overlay.querySelector(".iv-img");
+        const count = overlay.querySelector(".iv-count");
+        const show = () => {
+            img.src = urls[index];
+            count.textContent = `${index + 1} / ${urls.length}`;
+            overlay.querySelector(".iv-prev").hidden = urls.length < 2;
+            overlay.querySelector(".iv-next").hidden = urls.length < 2;
+        };
+        const step = (delta) => {
+            index = (index + delta + urls.length) % urls.length;
+            show();
+        };
+        const close = () => overlay.remove();
+        overlay.querySelector(".iv-close").addEventListener("click", close);
+        overlay.querySelector(".iv-prev").addEventListener("click", () => step(-1));
+        overlay.querySelector(".iv-next").addEventListener("click", () => step(1));
+        overlay.addEventListener("click", (event) => {
+            if (event.target === overlay) close();
+        });
+        let startX = null;
+        overlay.addEventListener("touchstart", (event) => {
+            startX = event.touches[0].clientX;
+        }, { passive: true });
+        overlay.addEventListener("touchend", (event) => {
+            if (startX === null) return;
+            const dx = event.changedTouches[0].clientX - startX;
+            startX = null;
+            if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1);
+        });
+        show();
+    }
+
+    async function openListing(
+        listingId
+    ) {
+        if (!listingId) {
+            return;
+        }
+        try {
+            const data =
+                await apiRequest(
+                    `/listings/${listingId}`
+                );
+            const listing =
+                normalizeListing(
+                    data?.listing ||
+                    data
+                );
+            await loadFavorites();
+            const isFavorite =
+                state.favorites.some(
+                    favorite =>
+                        Number(
+                            favorite.listing_id
+                        ) === Number(
+                            listing.id
+                        )
+                );
+            const title =
+                listing.title ||
+                "Canal Telegram";
+            const username =
+                listing.username
+                    ? `@${String(
+                        listing.username
+                    ).replace(
+                        /^@/,
+                        ""
+                    )}`
+                    : "Canal Telegram";
+            const photo =
+                listing.photo_url ||
+                "";
+            const price =
+                listing.price ??
+                listing.locked_price ??
+                0;
+            const currency =
+                listing.currency ||
+                state.user?.currency ||
+                "XAF";
+            const seller = listing.seller || {};
+            const sellerName =
+                seller.name ||
+                listing.seller_name ||
+                "Vendeur";
+            const perThousand = listing.price_per_1k;
+            const published =
+                listing.published_at || listing.created_at;
+            const previewUrls = (Array.isArray(listing.preview_ids) ? listing.preview_ids : [])
+                .map((id) => `${CONFIG.API_BASE_URL}/listings/previews/${id}`);
+            openModal(`
+                <div class="listing-detail">
+                    <div class="detail-image">
+                        ${
+                            photo
+                                ? `
+                                    <img
+                                        src="${escapeHTML(
+                                            photo
+                                        )}"
+                                        alt="${escapeHTML(
+                                            title
+                                        )}"
+                                    >
+                                `
+                                : `
+                                    <div class="detail-image-placeholder">
+                                        <span>${escapeHTML(listingInitials(title))}</span>
+                                    </div>
+                                `
+                        }
+                    </div>
+                    ${previewUrls.length
+                        ? `<div class="preview-gallery">
+                            <span class="preview-title">Aperçu du canal</span>
+                            <div class="preview-strip">
+                                ${previewUrls.map((url, index) => `
+                                    <button type="button" class="preview-thumb" data-preview-index="${index}" aria-label="Voir la photo ${index + 1}">
+                                        <img src="${escapeHTML(url)}" alt="Aperçu ${index + 1}" loading="lazy">
+                                    </button>`).join("")}
+                            </div>
+                        </div>`
+                        : ""}
+                    <div class="detail-header">
+                        <div>
+                            <span class="listing-category">
+                                ${escapeHTML(
+                                    listing.category ||
+                                    "Other"
+                                )}
+                            </span>
+                            <h2>
+                                ${escapeHTML(
+                                    title
+                                )}
+                            </h2>
+                            <p>
+                                ${escapeHTML(
+                                    username
+                                )}
+                            </p>
+                        </div>
+                        <button
+                            class="favorite-button ${
+                                isFavorite
+                                    ? "active"
+                                    : ""
+                            }"
+                            type="button"
+                            data-action="detail-favorite"
+                            data-listing-id="${escapeHTML(
+                                listing.id
+                            )}"
+                        >
+                            ${ICONS.heart}
+                        </button>
+                    </div>
+                    <div class="detail-price">
+                        ${formatMoney(
+                            price,
+                            currency
+                        )}
+                    </div>
+                    <div class="detail-stats shop-detail-stats">
+                        <div>
+                            <strong>${
+                                listing.subscribers_count !== undefined
+                                    ? formatNumber(listing.subscribers_count)
+                                    : "—"
+                            }</strong>
+                            <span>Abonnés</span>
+                        </div>
+                        <div>
+                            <strong>${
+                                perThousand ? formatNumber(perThousand) : "—"
+                            }</strong>
+                            <span>Prix / 1 000 abonnés</span>
+                        </div>
+                        <div>
+                            <strong>${escapeHTML(listing.category || "—")}</strong>
+                            <span>Catégorie</span>
+                        </div>
+                        <div>
+                            <strong>${formatDate(published)}</strong>
+                            <span>Mis en vente le</span>
+                        </div>
+                    </div>
+                    <div class="detail-description">
+                        <h3>
+                            Description
+                        </h3>
+                        <p>
+                            ${escapeHTML(
+                                listing.description ||
+                                "Aucune description fournie."
+                            )}
+                        </p>
+                    </div>
+                    <div class="verification-list">
+                        <div>
+                            ${ICONS.channel}
+                            <span>
+                                Canal vérifié
+                            </span>
+                            <strong>
+                                ${
+                                    listing.telegram_verified
+                                        ? "Oui"
+                                        : "En attente"
+                                }
+                            </strong>
+                        </div>
+                        <div>
+                            ${ICONS.lock}
+                            <span>
+                                Vérification NexMarket
+                            </span>
+                            <strong>
+                                ${
+                                    listing.bot_is_admin
+                                        ? "Active"
+                                        : "En attente"
+                                }
+                            </strong>
+                        </div>
+                    </div>
+                    <div class="seller-info seller-card">
+                        <div class="seller-avatar">${escapeHTML(listingInitials(sellerName))}</div>
+                        <div class="seller-copy">
+                            <span>Vendeur</span>
+                            <strong>${escapeHTML(sellerName)}</strong>
+                            <small>${
+                                seller.rating !== null && seller.rating !== undefined
+                                    ? `★ ${String(seller.rating).replace(".", ",")} · ${seller.reviews} avis`
+                                    : "Nouveau vendeur"
+                            }${
+                                seller.sales
+                                    ? ` · ${seller.sales} vente${seller.sales > 1 ? "s" : ""}`
+                                    : ""
+                            }</small>
+                        </div>
+                        <div class="seller-secure">
+                            ${ICONS.lock}
+                            <span>Paiement sécurisé</span>
+                        </div>
+                    </div>
+                    ${
+                        listing.channel?.channel_url
+                            ? `<a
+                                    class="secondary-action full-width channel-visit"
+                                    href="${escapeHTML(listing.channel.channel_url)}"
+                                    target="_blank"
+                                    rel="noopener"
+                                    data-visit-channel="${escapeHTML(listing.channel.channel_url)}"
+                                >Voir le canal sur Telegram</a>`
+                            : `<div class="private-note">
+                                    <strong>Canal privé</strong>
+                                    <span>Il n'a pas de lien public : l'accès te sera donné après l'achat.</span>
+                                </div>`
+                    }
+                    <button
+                        class="primary-action full-width"
+                        type="button"
+                        data-action="purchase"
+                        data-listing-id="${escapeHTML(
+                            listing.id
+                        )}"
+                    >
+                        ${ICONS.cart}
+                        Acheter ce canal
+                    </button>
+                </div>
+            `);
+            document
+                .querySelectorAll("[data-preview-index]")
+                .forEach((thumb) => {
+                    thumb.addEventListener("click", () => {
+                        openImageViewer(previewUrls, Number(thumb.dataset.previewIndex));
+                    });
+                });
+            document
+                .querySelector(
+                    '[data-action="detail-favorite"]'
+                )
+                ?.addEventListener(
+                    "click",
+                    async event => {
+                        await toggleFavorite(
+                            event.currentTarget
+                                .dataset
+                                .listingId
+                        );
+                        closeModal();
+                        await openListing(
+                            listing.id
+                        );
+                    }
+                );
+            document
+                .querySelector(
+                    '[data-action="purchase"]'
+                )
+                ?.addEventListener(
+                    "click",
+                    () => {
+                        purchaseListing(
+                            listing.id
+                        );
+                    }
+                );
+        } catch (error) {
+            showToast(
+                "Erreur",
+                error.message ||
+                "Impossible de charger cette annonce."
+            );
+        }
+    }
+    /* =====================================================
+       FAVORITES
+    ===================================================== */
+    async function toggleFavorite(
+        listingId
+    ) {
+        if (!state.user) {
+            showToast(
+                "Connexion requise",
+                "Ouvre NexMarket depuis Telegram."
+            );
+            return;
+        }
+        const exists =
+            state.favorites.some(
+                favorite =>
+                    Number(
+                        favorite.listing_id
+                    ) === Number(
+                        listingId
+                    )
+            );
+        try {
+            if (exists) {
+                await apiRequest(
+                    `/favorites/${listingId}`,
+                    {
+                        method: "DELETE"
+                    }
+                );
+                state.favorites =
+                    state.favorites.filter(
+                        favorite =>
+                            Number(
+                                favorite.listing_id
+                            ) !== Number(
+                                listingId
+                            )
+                    );
+                showToast(
+                    "Favori supprimé",
+                    "L'annonce a été retirée de tes favoris."
+                );
+            } else {
+                const data =
+                    await apiRequest(
+                        "/favorites",
+                        {
+                            method: "POST",
+                            body: JSON.stringify({
+                                listing_id: Number(listingId)
+                            })
+                        }
+                    );
+                state.favorites.push(
+                    data
+                );
+                showToast(
+                    "Ajouté aux favoris",
+                    "L'annonce a été ajoutée à tes favoris."
+                );
+            }
+            if (
+                state.currentPage ===
+                "buy"
+            ) {
+                await renderBuy();
+            }
+        } catch (error) {
+            showToast(
+                "Erreur",
+                error.message ||
+                "Impossible de modifier les favoris."
+            );
+        }
+    }
+    /* =====================================================
+       PURCHASE
+    ===================================================== */
+    async function purchaseListing(
+        listingId
+    ) {
+        if (!state.user) {
+            showToast(
+                "Connexion requise",
+                "Ouvre NexMarket depuis Telegram."
+            );
+            return;
+        }
+        if (!listingId) {
+            return;
+        }
+        try {
+            // Annonce payée en GRAM : parcours différent (paiement on-chain).
+            let gramListing = state.listings.find(
+                (item) => Number(item.id) === Number(listingId)
+            );
+            if (!gramListing) {
+                const fetched = await apiRequest(`/listings/${listingId}`);
+                gramListing = fetched?.listing || fetched;
+            }
+            if (String(gramListing?.currency || "").toUpperCase() === "GRAM") {
+                openGramPurchase(gramListing);
+                return;
+            }
+            /* Annonce en FCFA : paiement direct MoneyFusion, sans dépôt préalable.
+               L'achat se crée tout seul après confirmation, fonds bloqués comme d'habitude. */
+            openPurchasePayment(gramListing);
+            return;
+        } catch (error) {
+            await renderBuy();
+            showToast(
+                "Achat impossible",
+                error.message ||
+                "La transaction n'a pas pu être créée."
+            );
+        }
+    }
+    /* =====================================================
+       PAIEMENT EN GRAM (TON)
+       L'acheteur envoie le prix depuis son portefeuille Telegram vers
+       l'adresse de NexMarket, avec un commentaire unique : le serveur
+       constate le virement sur la blockchain, puis la transaction
+       démarre comme un achat normal (fonds bloqués chez NexMarket).
+    ===================================================== */
+    function openPurchasePayment(listing) {
+        const user = state.user || {};
+        const mine = String(user.country || "").toUpperCase();
+        const options = DEPOSIT_COUNTRIES.map((c) =>
+            `<option value="${escapeHTML(c.code)}" ${c.code === mine ? "selected" : ""}>${escapeHTML(c.name)} (${escapeHTML(c.dial)})</option>`
+        ).join("");
+        openModal(`
+            <div class="wallet-modal">
+                <div class="modal-header-content modal-header-spaced">
+                    <div>
+                        <span class="section-kicker">ACHAT SÉCURISÉ</span>
+                        <h2>Payer ce canal</h2>
+                        <p class="modal-subtitle">${escapeHTML(listing.title || "Canal Telegram")} · <b>${formatNumber(Number(listing.price) || 0)} XAF</b></p>
+                    </div>
+                </div>
+                <form id="buyForm" class="modal-form wallet-modal-form">
+                    <div class="modal-field">
+                        <span class="modal-field-label">Pays du paiement</span>
+                        <div id="buyCountryRow" class="buy-country-row">
+                            <b>${escapeHTML((DEPOSIT_COUNTRIES.find((c) => c.code === mine) || {}).name || "Choisis ton pays")}</b>
+                            <button type="button" id="buyCountryChange" class="link-change" style="margin:0">Changer</button>
+                        </div>
+                        <select id="buyCountry" class="buy-select hidden">${options}</select>
+                    </div>
+                    <div class="modal-field">
+                        <label for="buyPhone" class="modal-field-label">Numéro Mobile Money</label>
+                        <input id="buyPhone" type="tel" inputmode="tel" value="${escapeHTML(user.phone || "")}" placeholder="Ton numéro, sans l'indicatif" required>
+                        <small class="modal-field-hint">Tu choisis ton réseau (MTN, Airtel, Orange…) sur la page MoneyFusion. Ton argent reste bloqué en sécurité jusqu'à la livraison du canal.</small>
+                    </div>
+                    <div id="modalError" class="modal-inline-error hidden" role="alert">
+                        <span class="modal-error-dot"></span><div><strong></strong><span></span></div>
+                    </div>
+                    <button type="submit" class="primary-action full-width modal-submit">${STEP_ICONS.check}Payer avec MoneyFusion</button>
+                </form>
+            </div>`);
+        const buyKnown = DEPOSIT_COUNTRIES.some((c) => c.code === mine);
+        const buySelect = document.getElementById("buyCountry");
+        const buyRow = document.getElementById("buyCountryRow");
+        if (!buyKnown && buySelect && buyRow) {
+            buyRow.classList.add("hidden");
+            buySelect.classList.remove("hidden");
+        }
+        document.getElementById("buyCountryChange")?.addEventListener("click", () => {
+            buyRow?.classList.add("hidden");
+            buySelect?.classList.remove("hidden");
+            buySelect?.focus();
+        });
+        document.getElementById("buyForm")?.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const button = event.target.querySelector("button[type=submit]");
+            const phone = cleanWithdrawPhone(document.getElementById("buyPhone")?.value);
+            if (!/^\+?\d{6,15}$/.test(phone)) {
+                showModalError("Numéro invalide", "Entre ton numéro Mobile Money, sans l'indicatif.");
+                return;
+            }
+            button.disabled = true;
+            try {
+                const data = await apiRequest("/deposits/purchase", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        listing_id: Number(listing.id),
+                        country: document.getElementById("buyCountry")?.value,
+                        phone
+                    })
+                });
+                closeModal();
+                showToast("Paiement en cours", "Termine le paiement MoneyFusion : ton achat sera créé automatiquement.");
+                if (data?.payment_link) {
+                    openPaymentLink(data.payment_link);
+                }
+                watchPurchase(data?.id);
+            } catch (error) {
+                button.disabled = false;
+                showModalError("Paiement impossible", error.message || "Réessaie dans un instant.");
+            }
+        });
+    }
+
+    /* Surveille le paiement (le serveur le fait aussi en tâche de fond). */
+    async function watchPurchase(depositId) {
+        if (!depositId) {
+            return;
+        }
+        for (let i = 0; i < 60; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 4000));
+            try {
+                const result = await apiRequest(`/deposits/${depositId}/check`, { method: "POST" });
+                const status = String(result?.status || "");
+                if (status === "paid") {
+                    await loadTransactions();
+                    await loadWallet();
+                    showToast("Paiement confirmé", "Tes fonds sont bloqués en sécurité. Un administrateur prend ton achat en charge.");
+                    return;
+                }
+                if (["failed", "expired", "cancelled", "amount_mismatch"].includes(status)) {
+                    showToast("Paiement non abouti", "Aucun montant n'a été prélevé pour cet achat.");
+                    return;
+                }
+            } catch (error) {
+                /* on réessaie au prochain tour */
+            }
+        }
+    }
+
+    const GRAM_ADDRESS_KEY = "nexmarket_gram_address";
+    const GRAM_ADDRESS_PATTERN = /^[A-Za-z0-9_-]{48}$|^-?[01]:[0-9a-fA-F]{64}$/;
+
+    function openGramPurchase(listing) {
+        let saved = "";
+        try { saved = localStorage.getItem(GRAM_ADDRESS_KEY) || ""; } catch (e) { /* ignoré */ }
+        openModal(`
+            <div class="gram-modal">
+                <div class="modal-header-content">
+                    <div>
+                        <span class="section-kicker">PAIEMENT GRAM</span>
+                        <h2>Payer en GRAM</h2>
+                    </div>
+                </div>
+                <div class="gram-amount">${escapeHTML(formatNumber(listing.price))} GRAM</div>
+                <label class="modal-field">
+                    <span class="modal-field-label">Ton adresse GRAM</span>
+                    <input id="gramBuyerAddress" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+                        placeholder="UQ… ou EQ…" value="${escapeHTML(saved)}">
+                </label>
+                <p class="gram-note">Elle sert uniquement à te rembourser si la transaction est annulée. Recopie-la depuis l'app « Argent » de Telegram.</p>
+                <p class="gram-note">Les GRAM restent bloqués chez NexMarket jusqu'à la fin de la transaction.</p>
+                <button class="primary-action full-width" type="button" id="gramContinue">Continuer</button>
+            </div>
+        `);
+        document.getElementById("gramContinue")?.addEventListener("click", async () => {
+            const address = (document.getElementById("gramBuyerAddress")?.value || "").trim();
+            if (!GRAM_ADDRESS_PATTERN.test(address)) {
+                showToast("Adresse GRAM invalide", "Recopie ton adresse GRAM depuis l'app « Argent » de Telegram.");
+                return;
+            }
+            try { localStorage.setItem(GRAM_ADDRESS_KEY, address); } catch (e) { /* ignoré */ }
+            closeModal();
+            showLoading("Création de la transaction...");
+            try {
+                const data = await apiRequest("/transactions", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        listing_id: Number(listing.id),
+                        buyer_gram_address: address
+                    })
+                });
+                const transaction = data?.transaction || data;
+                await loadTransactions();
+                openGramPayment(transaction);
+            } catch (error) {
+                await renderBuy();
+                showToast("Achat impossible", error.message || "La transaction n'a pas pu être créée.");
+            }
+        });
+    }
+
+    function openGramPayment(transaction) {
+        const pay = transaction?.gram_pay;
+        if (!pay) {
+            openTransaction(transaction?.id);
+            return;
+        }
+        const row = (label, value, key) => `
+            <div class="gram-field">
+                <span>${label}</span>
+                <code>${escapeHTML(value)}</code>
+                <button type="button" class="chip-button" data-gram-copy="${key}">Copier</button>
+            </div>`;
+        openModal(`
+            <div class="gram-modal">
+                <div class="modal-header-content">
+                    <div>
+                        <span class="section-kicker">PAIEMENT GRAM</span>
+                        <h2>Envoie ${escapeHTML(formatNumber(pay.amount))} GRAM</h2>
+                    </div>
+                </div>
+                ${row("À cette adresse", pay.address, "address")}
+                ${row("Commentaire (obligatoire)", pay.comment, "comment")}
+                <p class="gram-note"><strong>Important :</strong> ajoute exactement ce commentaire, sinon ton paiement ne pourra pas être reconnu. Envoie au moins ${escapeHTML(formatNumber(pay.amount))} GRAM.</p>
+                <button class="primary-action full-width" type="button" id="gramOpenWallet">Ouvrir mon portefeuille</button>
+                <div class="gram-wait" id="gramWait"><span class="gram-spin"></span><span>En attente du paiement…</span></div>
+                <button class="secondary-action full-width" type="button" id="gramLater">Je paierai plus tard</button>
+            </div>
+        `);
+        document.querySelectorAll("[data-gram-copy]").forEach((button) => {
+            button.addEventListener("click", async () => {
+                const value = pay[button.dataset.gramCopy] || "";
+                try {
+                    await navigator.clipboard.writeText(value);
+                    showToast("Copié", "Colle-le dans ton portefeuille.");
+                } catch (error) {
+                    showToast("Copie impossible", value);
+                }
+            });
+        });
+        document.getElementById("gramOpenWallet")?.addEventListener("click", () => {
+            try {
+                if (tg && typeof tg.openLink === "function") {
+                    tg.openLink(pay.link);
+                } else {
+                    window.location.href = pay.link;
+                }
+            } catch (error) {
+                showToast("Portefeuille", "Ouvre l'app « Argent » de Telegram et envoie le paiement avec l'adresse et le commentaire ci-dessus.");
+            }
+        });
+        document.getElementById("gramLater")?.addEventListener("click", () => {
+            closeModal();
+            navigateTo("messages").catch(() => {});
+        });
+        /* Suivi : le serveur lit la blockchain, on interroge la transaction. */
+        const timer = setInterval(async () => {
+            if (!document.getElementById("gramWait")) {
+                clearInterval(timer);
+                return;
+            }
+            try {
+                const data = await apiRequest(`/transactions/${transaction.id}`);
+                const fresh = data?.transaction || data;
+                if (fresh && fresh.status !== "pending_payment") {
+                    clearInterval(timer);
+                    closeModal();
+                    if (fresh.status === "cancelled") {
+                        showToast("Transaction annulée", "Le paiement n'a pas été reçu à temps.");
+                    } else {
+                        showToast("Paiement reçu", "Tes GRAM sont bloqués en sécurité. Un administrateur prend la transaction en charge.");
+                        await loadTransactions();
+                        openTransaction(transaction.id);
+                    }
+                }
+            } catch (error) { /* on réessaie au prochain tour */ }
+        }, 6000);
+    }
+
+    /* =====================================================
+       WALLET PAGE
+    ===================================================== */
+    /* =====================================================
+       SOLDE MASQUABLE + COPIE DU NEXA ID
+    ===================================================== */
+    const BALANCE_HIDDEN_KEY = "nexmarket_hide_balance";
+
+    function isBalanceHidden() {
+        try {
+            return localStorage.getItem(BALANCE_HIDDEN_KEY) === "1";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function renderMoney(value, currency) {
+        const real = formatMoney(value, currency);
+
+        return `<span class="money" data-real="${escapeHTML(real)}">${
+            isBalanceHidden() ? "••••••" : escapeHTML(real)
+        }</span>`;
+    }
+
+    function applyBalanceMask() {
+        const hidden = isBalanceHidden();
+
+        document.querySelectorAll(".money").forEach((element) => {
+            element.textContent = hidden ? "••••••" : element.dataset.real;
+        });
+
+        document
+            .querySelectorAll("[data-balance-toggle]")
+            .forEach((button) => {
+                button.innerHTML = hidden ? ICONS.eyeOff : ICONS.eye;
+                button.setAttribute("aria-pressed", String(hidden));
+                button.setAttribute(
+                    "aria-label",
+                    hidden ? "Afficher le solde" : "Masquer le solde"
+                );
+            });
+    }
+
+    async function copyText(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (error) {
+            /* WebView sans API presse-papiers : méthode de secours */
+            try {
+                const area = document.createElement("textarea");
+                area.value = text;
+                area.setAttribute("readonly", "");
+                area.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+                document.body.appendChild(area);
+                area.select();
+                const ok = document.execCommand("copy");
+                area.remove();
+                return ok;
+            } catch (fallbackError) {
+                return false;
+            }
+        }
+    }
+
+    function bindBalanceTools() {
+        applyBalanceMask();
+
+        document
+            .querySelectorAll("[data-balance-toggle]")
+            .forEach((button) => {
+                button.addEventListener("click", () => {
+                    try {
+                        localStorage.setItem(
+                            BALANCE_HIDDEN_KEY,
+                            isBalanceHidden() ? "0" : "1"
+                        );
+                    } catch (error) {
+                        /* stockage indisponible : sans conséquence */
+                    }
+
+                    applyBalanceMask();
+                });
+            });
+
+        document
+            .querySelectorAll("[data-copy-nexa]")
+            .forEach((button) => {
+                button.addEventListener("click", async () => {
+                    const id = state.user?.nexa_id;
+
+                    if (!id) {
+                        showToast(
+                            "Nexa ID",
+                            "Ton identifiant n'est pas encore prêt."
+                        );
+                        return;
+                    }
+
+                    const ok = await copyText(id);
+
+                    showToast(
+                        ok ? "Copié" : "Copie impossible",
+                        ok ? `${id} est dans le presse-papiers.` : id
+                    );
+                });
+            });
+    }
+
+    async function renderWallet() {
+        state.currentPage =
+            "wallet";
+        showLoading(
+            "Chargement du portefeuille..."
+        );
+        await loadWallet();
+        if (!DOM.pageContainer) {
+            return;
+        }
+        const wallet =
+            state.wallet || {};
+        const available =
+            wallet.available_balance ??
+            wallet.balance ??
+            0;
+        const blocked =
+            wallet.blocked_balance ??
+            0;
+        const revenue =
+            wallet.total_revenue ??
+            0;
+        const currency =
+            wallet.currency ||
+            state.user?.currency ||
+            "XAF";
+        DOM.pageContainer.innerHTML = `
+            <section class="wallet-page">
+                <div class="page-heading">
+                    <span class="section-kicker">
+                        MON PORTEFEUILLE
+                    </span>
+                    <h1>
+                        Wallet
+                    </h1>
+                    <p>
+                        Gère ton argent et tes transactions
+                        NexMarket.
+                    </p>
+                </div>
+                <div class="wallet-balance-panel">
+                    <div class="wallet-balance-top">
+                        <span>Solde disponible</span>
+                        <button
+                            type="button"
+                            class="balance-eye"
+                            data-balance-toggle
+                        >${ICONS.eye}</button>
+                    </div>
+                    <strong>
+                        ${renderMoney(available, currency)}
+                    </strong>
+                    ${displayCurrency() !== "XAF"
+                        ? (() => {
+                            const real = `${new Intl.NumberFormat(uiLocale()).format(Number(available) || 0)} XAF`;
+                            return `<small class="wallet-real-note">Montant réel : <span class="money" data-real="${escapeHTML(real)}">${isBalanceHidden() ? "••••••" : escapeHTML(real)}</span></small>`;
+                        })()
+                        : ""}
+                    <div class="wallet-id">
+                        NEXA ID
+                        <b>
+                            ${
+                                state.user?.nexa_id ||
+                                "En cours…"
+                            }
+                        </b>
+                        <button
+                            type="button"
+                            class="copy-chip"
+                            data-copy-nexa
+                        >${ICONS.copy} Copier</button>
+                    </div>
+                </div>
+                <div class="wallet-actions">
+                    <button
+                        class="primary-action"
+                        type="button"
+                        data-action="deposit"
+                    >
+                        ${ICONS.deposit}
+                        Déposer
+                    </button>
+                    <button
+                        class="secondary-action"
+                        type="button"
+                        data-action="withdraw"
+                    >
+                        ${ICONS.withdraw}
+                        Retirer
+                    </button>
+                </div>
+                <div class="wallet-stats">
+                    <div>
+                        <span>
+                            Bloqué
+                        </span>
+                        <strong>
+                            ${renderMoney(blocked, currency)}
+                        </strong>
+                    </div>
+                    <div>
+                        <span>
+                            Revenus
+                        </span>
+                        <strong>
+                            ${renderMoney(revenue, currency)}
+                        </strong>
+                    </div>
+                </div>
+                <div class="wallet-info">
+                    ${ICONS.lock}
+                    <div>
+                        <strong>
+                            Paiements sécurisés
+                        </strong>
+                        <p>
+                            Les fonds utilisés pour un achat
+                            sont réservés jusqu'à la fin
+                            de la transaction.
+                        </p>
+                    </div>
+                </div>
+            </section>
+        `;
+        bindWalletActions();
+        bindBalanceTools();
+    }
+    /* =====================================================
+       DEPOSIT
+    ===================================================== */
+    /* Frais MoneyFusion sur un dépôt : déduits du montant payé (le wallet reçoit
+       le NET confirmé par MoneyFusion). Ce n'est qu'une ESTIMATION : le taux
+       vient de /deposits/fees, le montant exact est confirmé après le paiement. */
+    const DEPOSIT_FEES = { commission: 0.05, user: 0 };
+
+    function depositQuote(amount) {
+        const gross = Math.floor(Number(amount) || 0);
+        const net = Math.floor(gross * (1 - DEPOSIT_FEES.commission));
+        return {
+            commission: gross - net,
+            net,
+            total: Math.ceil(gross * (1 + DEPOSIT_FEES.user))
+        };
+    }
+
+    function renderDepositQuote() {
+        const box = document.getElementById("depositQuote");
+        if (!box) {
+            return;
+        }
+        const amount = Number(document.getElementById("depositAmount")?.value);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            box.innerHTML = `<p class="deposit-quote-note">Les frais éventuels sont affichés sur la page de paiement MoneyFusion.</p>`;
+            return;
+        }
+        box.innerHTML = `<p class="deposit-quote-note">Les frais éventuels sont affichés sur la page de paiement MoneyFusion.</p>`;
+    }
+
+    async function loadDepositFees() {
+        try {
+            const data = await apiRequest("/deposits/fees");
+            if (Number(data?.commission_rate) >= 0 && Number(data?.user_fee_rate) >= 0) {
+                DEPOSIT_FEES.commission = Number(data.commission_rate);
+                DEPOSIT_FEES.user = Number(data.user_fee_rate);
+                renderDepositQuote();
+            }
+        } catch (error) {
+            /* taux par défaut conservés */
+        }
+    }
+
+    /* =====================================================
+       PARCOURS EN ÉTAPES
+       - inscription : 3 étapes (profil, pays + numéro, sécurité)
+       - dépôt ET retrait : les mêmes 5 étapes
+         (montant, pays, numéro, résumé, confirmation)
+    ===================================================== */
+    const SI = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+    const STEP_ICONS = {
+        amount: SI('<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>'),
+        globe: SI('<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/>'),
+        phone: SI('<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>'),
+        receipt: SI('<path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z"/><path d="M9 8h6M9 12h6"/>'),
+        check: SI('<path class="draw" d="M5 12.5l4.5 4.5L19 7.5"/>'),
+        user: SI('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'),
+        shield: SI('<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>'),
+        back: SI('<path d="M15 6l-6 6 6 6"/>'),
+        next: SI('<path d="M9 6l6 6-6 6"/>')
+    };
+    const FLOW_LABELS = ["Montant", "Pays", "Numéro", "Résumé", "Confirmer"];
+    const FLOW_ICONS = [STEP_ICONS.amount, STEP_ICONS.globe, STEP_ICONS.phone, STEP_ICONS.receipt, STEP_ICONS.check];
+
+    function mountSteps(form, cfg) {
+        if (!form) {
+            return null;
+        }
+        const total = cfg.labels.length;
+        const panes = [...form.querySelectorAll(":scope > [data-step]")];
+        panes.forEach((pane) => pane.classList.add("step-pane"));
+        const head = document.createElement("div");
+        head.className = "stepper";
+        head.style.setProperty("--n", total);
+        head.innerHTML = `<div class="stepper-track"><i class="stepper-fill"></i></div>` +
+            cfg.labels.map((label, i) => `
+                <div class="step-dot" data-dot="${i + 1}">
+                    <span>${cfg.icons[i]}</span><small>${escapeHTML(label)}</small>
+                </div>`).join("");
+        form.prepend(head);
+        const nav = document.createElement("div");
+        nav.className = "step-nav";
+        nav.innerHTML = `
+            <button type="button" class="step-back">${STEP_ICONS.back}Retour</button>
+            <button type="button" class="step-next">Continuer${STEP_ICONS.next}</button>`;
+        form.append(nav);
+        let current = 1;
+        /* Les étapes sautées (ex. « Pays » déjà connu) disparaissent de la barre. */
+        const layoutDots = (n) => {
+            const dots = [...head.querySelectorAll(".step-dot")];
+            const visible = dots.filter((dot) => !cfg.skip?.(Number(dot.dataset.dot)) || Number(dot.dataset.dot) === n);
+            dots.forEach((dot) => {
+                const i = Number(dot.dataset.dot);
+                dot.style.display = visible.includes(dot) ? "" : "none";
+                dot.classList.toggle("active", i === n);
+                dot.classList.toggle("done", i < n);
+            });
+            head.style.setProperty("--n", visible.length);
+            const pos = Math.max(0, visible.findIndex((dot) => Number(dot.dataset.dot) === n));
+            head.querySelector(".stepper-fill").style.width =
+                `${visible.length > 1 ? (pos / (visible.length - 1)) * 100 : 100}%`;
+        };
+        const go = (n) => {
+            const dir = n >= current ? "fwd" : "back";
+            current = n;
+            panes.forEach((pane) => {
+                pane.classList.remove("active", "fwd", "back");
+                if (Number(pane.dataset.step) === n) {
+                    pane.classList.add("active", dir);
+                }
+            });
+            layoutDots(n);
+            nav.querySelector(".step-back").style.visibility = n === 1 ? "hidden" : "visible";
+            nav.querySelector(".step-next").classList.toggle("hidden", n === total);
+            clearModalError();
+            cfg.onEnter?.(n);
+        };
+        const skipped = (n) => Boolean(cfg.skip?.(n));
+        const next = () => {
+            const error = cfg.validate?.(current);
+            if (error) {
+                showModalError(error[0], error[1]);
+                return;
+            }
+            let target = current + 1;
+            while (target < total && skipped(target)) {
+                target += 1;
+            }
+            if (current < total) {
+                go(target);
+            }
+        };
+        nav.querySelector(".step-next").addEventListener("click", next);
+        nav.querySelector(".step-back").addEventListener("click", () => {
+            let target = current - 1;
+            while (target > 1 && skipped(target)) {
+                target -= 1;
+            }
+            if (current > 1) {
+                go(target);
+            }
+        });
+        /* Entrée / soumission avant la dernière étape : on avance seulement. */
+        form.addEventListener("submit", (event) => {
+            if (current < total) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                next();
+            }
+        }, true);
+        go(1);
+        const api = { go, next, nav, relayout: () => layoutDots(current) };
+        form._steps = api;
+        return api;
+    }
+
+    /* Pays du compte (saisi à l'inscription) : plus redemandé, modifiable en un clic. */
+    function addChangeCountry(steps, getName, onChange) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "link-change";
+        steps.nav.before(button);
+        const refresh = (n = 1) => {
+            button.hidden = n !== 1 || !getName();
+            button.textContent = `Pays : ${getName()} · Changer`;
+        };
+        button.addEventListener("click", () => {
+            onChange();
+            steps.go(2);
+        });
+        return refresh;
+    }
+
+    function renderSummary(rows) {
+        const box = document.getElementById("stepSummary");
+        if (box) {
+            box.innerHTML = rows.map(([icon, label, value]) => `
+                <div class="summary-row">
+                    <span class="summary-icon">${icon}</span>
+                    <span class="summary-label">${escapeHTML(label)}</span>
+                    <b>${escapeHTML(value)}</b>
+                </div>`).join("");
+        }
+    }
+
+    const stepFinal = (button, text) => `
+        <div class="step-final" data-step="5">
+            <div class="success-orb">${STEP_ICONS.check}</div>
+            <h3>Tout est prêt</h3>
+            <p>${text}</p>
+            ${button}
+        </div>`;
+
+    /* ---------- Inscription : 3 étapes ---------- */
+    async function openOnboarding() {
+        const user = state.user || {};
+        const name = [user.first_name, user.last_name].filter(Boolean).join(" ") || "Nouveau membre";
+        const photo = /^https:\/\//.test(user.photo_url || "") ? user.photo_url : "";
+        const choice = { country: "", dial: "" };
+        openModal(`
+            <div class="wallet-modal onboard">
+                <div class="modal-header-content modal-header-spaced">
+                    <div>
+                        <span class="section-kicker">BIENVENUE</span>
+                        <h2>Crée ton compte</h2>
+                        <p class="modal-subtitle">3 étapes rapides pour sécuriser tes paiements.</p>
+                    </div>
+                </div>
+                <form id="onboardForm" class="modal-form wallet-modal-form" novalidate>
+                    <div class="modal-field" data-step="1">
+                        <div class="profile-card">
+                            <div class="avatar-ring">${photo
+                                ? `<img src="${escapeHTML(photo)}" alt="">`
+                                : `<span>${escapeHTML(name.charAt(0).toUpperCase())}</span>`}</div>
+                            <strong>${escapeHTML(name)}</strong>
+                            <small>${user.username ? "@" + escapeHTML(user.username) : "Compte Telegram relié"}</small>
+                            ${user.nexa_id ? `<em>ID ${escapeHTML(user.nexa_id)}</em>` : ""}
+                        </div>
+                    </div>
+                    <div class="modal-field" data-step="2">
+                        <span class="modal-field-label">Ton pays</span>
+                        <div class="country-grid" id="onboardCountries"><p class="modal-field-hint">Chargement…</p></div>
+                        <label for="onboardPhone" class="modal-field-label">Numéro Mobile Money</label>
+                        <div class="phone-input-wrap">
+                            <span class="phone-prefix" id="onboardDial">+</span>
+                            <input id="onboardPhone" type="tel" inputmode="tel" placeholder="Ton numéro, sans l'indicatif">
+                        </div>
+                    </div>
+                    <div class="modal-field" data-step="3">
+                        <ul class="secure-list">
+                            <li><span>${STEP_ICONS.shield}</span>Ton argent reste bloqué jusqu'à la livraison du canal.</li>
+                            <li><span>${STEP_ICONS.check}</span>Chaque litige est examiné par l'équipe NexMarket.</li>
+                            <li><span>${STEP_ICONS.user}</span>Ne partage jamais tes codes ni tes mots de passe.</li>
+                        </ul>
+                        <label class="terms-check"><input type="checkbox" id="onboardTerms"><i></i>J'accepte les conditions d'utilisation de NexMarket.</label>
+                        <button type="submit" class="primary-action full-width modal-submit">${STEP_ICONS.check}Créer mon compte</button>
+                    </div>
+                    <div id="modalError" class="modal-inline-error hidden" role="alert">
+                        <span class="modal-error-dot"></span><div><strong></strong><span></span></div>
+                    </div>
+                </form>
+            </div>`);
+        DOM.modalContainer?.classList.add("locked");
+        const form = document.getElementById("onboardForm");
+        mountSteps(form, {
+            labels: ["Profil", "Pays & numéro", "Sécurité"],
+            icons: [STEP_ICONS.user, STEP_ICONS.globe, STEP_ICONS.shield],
+            validate: (step) => {
+                if (step !== 2) {
+                    return null;
+                }
+                if (!choice.country) {
+                    return ["Pays", "Choisis ton pays."];
+                }
+                if (!/^\+?\d{6,15}$/.test(cleanWithdrawPhone(document.getElementById("onboardPhone")?.value))) {
+                    return ["Numéro invalide", "Entre ton numéro Mobile Money, sans l'indicatif."];
+                }
+                return null;
+            }
+        });
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (!document.getElementById("onboardTerms")?.checked) {
+                showModalError("Conditions", "Coche la case pour accepter les conditions.");
+                return;
+            }
+            try {
+                const updated = await apiRequest("/users/me/onboarding", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        country: choice.country,
+                        phone: cleanWithdrawPhone(document.getElementById("onboardPhone")?.value),
+                        accept_terms: true
+                    })
+                });
+                state.user = { ...state.user, ...updated };
+                DOM.modalContainer?.classList.remove("locked");
+                closeModal();
+                showToast("Compte créé", "Bienvenue sur NexMarket !");
+            } catch (error) {
+                showModalError("Création impossible", error.message || "Réessaie dans un instant.");
+            }
+        });
+        let list = DEPOSIT_COUNTRIES;
+        try {
+            const data = await apiRequest("/withdrawals/methods");
+            if (data?.countries?.length) {
+                list = data.countries;
+            }
+        } catch (error) {
+            /* liste de secours */
+        }
+        const grid = document.getElementById("onboardCountries");
+        if (!grid) {
+            return;
+        }
+        grid.innerHTML = list.map((c) => `
+            <button type="button" class="country-option" data-code="${escapeHTML(c.code)}" data-dial="${escapeHTML(c.dial || "")}">
+                <strong>${escapeHTML(c.name)}</strong><small>${escapeHTML(c.dial || "")}</small>
+            </button>`).join("");
+        grid.querySelectorAll(".country-option").forEach((button) => {
+            button.addEventListener("click", () => {
+                grid.querySelectorAll(".country-option").forEach((o) => o.classList.remove("selected"));
+                button.classList.add("selected");
+                choice.country = button.dataset.code;
+                choice.dial = button.dataset.dial;
+                document.getElementById("onboardDial").textContent = choice.dial || "+";
+                document.getElementById("onboardPhone")?.focus();
+            });
+        });
+    }
+
+    /* Ouvre l'inscription tant que le compte n'est pas créé (serveur à jour seulement). */
+    window.__nexOnboard = () => {
+        if (state.user && "onboarded_at" in state.user && !state.user.onboarded_at) {
+            openOnboarding();
+        }
+    };
+
+    function openWalletDeposit(
+        suggestedAmount = ""
+    ) {
+        openModal(`
+            <div class="wallet-modal">
+                <div class="modal-header-content modal-header-spaced">
+                    <div class="modal-title-wrap">
+                        <span class="modal-icon-badge deposit-badge">
+                            ${ICONS.deposit}
+                        </span>
+                        <div>
+                            <span class="section-kicker">
+                                PORTEFEUILLE
+                            </span>
+                            <h2>
+                                Déposer de l'argent
+                            </h2>
+                            <p class="modal-subtitle">
+                                Recharge ton portefeuille NexMarket
+                                de manière sécurisée.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                <form
+                    id="depositForm"
+                    class="modal-form wallet-modal-form"
+                >
+                    <div class="modal-field" data-step="1">
+                        <label
+                            for="depositAmount"
+                            class="modal-field-label"
+                        >
+                            Montant
+                        </label>
+                        <div class="amount-input-wrap">
+                            <input
+                                id="depositAmount"
+                                type="number"
+                                min="1"
+                                step="1"
+                                inputmode="numeric"
+                                placeholder="0"
+                                value="${suggestedAmount || ""}"
+                                required
+                            >
+                            <span>
+                                ${escapeHTML(
+                                    state.wallet?.currency ||
+                                    state.user?.currency ||
+                                    "XAF"
+                                )}
+                            </span>
+                        </div>
+                    </div>
+                    <div
+                        class="deposit-quote" data-step="1"
+                        id="depositQuote"
+                        aria-live="polite"
+                    ></div>
+                    <div class="modal-field" data-step="2">
+                        <span class="modal-field-label">
+                            Pays d'origine
+                        </span>
+                        <div class="country-grid" id="depositCountryGrid"></div>
+                    </div>
+                    <div class="modal-field" data-step="3">
+                        <label
+                            for="depositPhone"
+                            class="modal-field-label"
+                        >
+                            Numéro Mobile Money
+                        </label>
+                        <div class="phone-input-wrap">
+                            <span class="phone-prefix" id="depositDial">
+                                ${
+                                    DEPOSIT_COUNTRIES.find(
+                                        (country) =>
+                                            country.code === getDepositCountry()
+                                    )?.dial || "+242"
+                                }
+                            </span>
+                            <input
+                                id="depositPhone"
+                                type="tel"
+                                inputmode="tel"
+                                autocomplete="tel"
+                                placeholder="Ton numéro, sans l'indicatif"
+                                required
+                            >
+                        </div>
+                    </div>
+                    <div class="step-summary" id="stepSummary" data-step="4"></div>
+                    <div class="payment-provider wallet-provider" data-step="4">
+                        <span class="provider-icon">
+                            ${ICONS.wallet}
+                        </span>
+                        <div class="provider-copy">
+                            <span class="provider-label">
+                                Moyen de paiement
+                            </span>
+                            <strong>
+                                MoneyFusion
+                            </strong>
+                            <small>
+                                Tu seras redirigé vers la
+                                page de paiement sécurisée.
+                            </small>
+                        </div>
+                        <span class="provider-status">
+                            Sécurisé
+                        </span>
+                    </div>
+                    <div
+                        id="modalError"
+                        class="modal-inline-error hidden"
+                        role="alert"
+                    >
+                        <span class="modal-error-dot"></span>
+                        <div>
+                            <strong></strong>
+                            <span></span>
+                        </div>
+                    </div>
+                    ${stepFinal(`<button type="submit" class="primary-action full-width modal-submit">${ICONS.deposit}Confirmer le dépôt</button>`, "Tu vas être redirigé vers la page de paiement sécurisée MoneyFusion.")}
+                </form>
+            </div>
+        `);
+        let refreshDepositChange = null;
+        let changeCountry = false;
+        const mineDeposit = String(state.user?.country || "").toUpperCase();
+        const phoneBox = document.getElementById("depositPhone");
+        if (phoneBox && !phoneBox.value && state.user?.phone) {
+            phoneBox.value = state.user.phone;
+        }
+        const depositSteps = mountSteps(document.getElementById("depositForm"), {
+            labels: FLOW_LABELS,
+            icons: FLOW_ICONS,
+            skip: (n) => n === 2 && !changeCountry && DEPOSIT_COUNTRIES.some((c) => c.code === mineDeposit),
+            validate: (step) => {
+                const amount = Number(document.getElementById("depositAmount")?.value);
+                if (step === 1 && !(Number.isFinite(amount) && amount > 0)) {
+                    return ["Montant invalide", "Entre un montant supérieur à zéro."];
+                }
+                if (step === 2 && !document.querySelector("#depositCountryGrid .country-option.selected")) {
+                    return ["Pays", "Choisis ton pays."];
+                }
+                if (step === 3 && !/^\+?\d{6,15}$/.test(cleanWithdrawPhone(document.getElementById("depositPhone")?.value))) {
+                    return ["Numéro invalide", "Entre ton numéro Mobile Money, sans l'indicatif."];
+                }
+                return null;
+            },
+            onEnter: (step) => {
+                refreshDepositChange?.(step);
+                if (step !== 4) {
+                    return;
+                }
+                const amount = Number(document.getElementById("depositAmount")?.value) || 0;
+                const quote = depositQuote(amount);
+                const picked = document.querySelector("#depositCountryGrid .country-option.selected");
+                renderSummary([
+                    [STEP_ICONS.amount, "Montant", `${formatNumber(amount)} XAF`],
+                    [STEP_ICONS.globe, "Pays", picked?.querySelector("strong")?.textContent || ""],
+                    [STEP_ICONS.phone, "Numéro", `${picked?.dataset.dial || ""} ${cleanWithdrawPhone(document.getElementById("depositPhone")?.value)}`]
+                ]);
+            }
+        });
+        refreshDepositChange = addChangeCountry(
+            depositSteps,
+            () => DEPOSIT_COUNTRIES.find((c) => c.code === getDepositCountry())?.name || "",
+            () => { changeCountry = true; }
+        );
+        refreshDepositChange(1);
+        document
+            .getElementById("depositAmount")
+            ?.addEventListener("input", renderDepositQuote);
+        renderDepositQuote();
+        loadDepositFees();
+        renderDepositCountryGrid();
+        loadDepositCountries();
+
+        document
+            .getElementById("depositForm")
+            ?.addEventListener(
+                "submit",
+                handleDepositSubmit
+            );
+    }
+    /* Pays de dépôt : liste de secours (CFA), remplacée par celle de MoneyFusion
+       (/deposits/countries) dès qu'elle est chargée. */
+    let DEPOSIT_COUNTRIES = [
+        { code: "CI", name: "Côte d'Ivoire", dial: "+225" },
+        { code: "SN", name: "Sénégal", dial: "+221" },
+        { code: "TG", name: "Togo", dial: "+228" },
+        { code: "BJ", name: "Bénin", dial: "+229" },
+        { code: "BF", name: "Burkina Faso", dial: "+226" },
+        { code: "ML", name: "Mali", dial: "+223" },
+        { code: "CM", name: "Cameroun", dial: "+237" },
+        { code: "GA", name: "Gabon", dial: "+241" },
+        { code: "CG", name: "Congo Brazzaville", dial: "+242" }
+    ];
+
+    function renderDepositCountryGrid() {
+        const grid = document.getElementById("depositCountryGrid");
+        if (!grid) {
+            return;
+        }
+        const selected = DEPOSIT_COUNTRIES.some(
+            (country) => country.code === getDepositCountry()
+        )
+            ? getDepositCountry()
+            : DEPOSIT_COUNTRIES[0]?.code;
+        grid.innerHTML = DEPOSIT_COUNTRIES.map(
+            (country) => `
+                <button
+                    type="button"
+                    class="country-option ${country.code === selected ? "selected" : ""}"
+                    data-country="${escapeHTML(country.code)}"
+                    data-dial="${escapeHTML(country.dial)}"
+                >
+                    <strong>${escapeHTML(country.name)}</strong>
+                    <small>${escapeHTML(country.dial)}</small>
+                </button>`
+        ).join("");
+        const dial = document.getElementById("depositDial");
+        if (dial) {
+            dial.textContent =
+                DEPOSIT_COUNTRIES.find((country) => country.code === selected)?.dial || "";
+        }
+        grid.querySelectorAll(".country-option").forEach((option) => {
+            option.addEventListener("click", () => {
+                grid
+                    .querySelectorAll(".country-option")
+                    .forEach((other) => other.classList.remove("selected"));
+                option.classList.add("selected");
+                const dialBox = document.getElementById("depositDial");
+                if (dialBox) {
+                    dialBox.textContent = option.dataset.dial;
+                }
+                try {
+                    localStorage.setItem(
+                        "nexmarket_deposit_country",
+                        option.dataset.country
+                    );
+                } catch (error) {
+                    /* stockage indisponible : sans conséquence */
+                }
+                document.getElementById("depositPhone")?.focus();
+            });
+        });
+    }
+
+    async function loadDepositCountries() {
+        try {
+            const data = await apiRequest("/deposits/countries");
+            const list = Array.isArray(data?.countries) ? data.countries : [];
+            if (list.length) {
+                DEPOSIT_COUNTRIES = list;
+                renderDepositCountryGrid();
+                document.getElementById("depositForm")?._steps?.relayout();
+            }
+        } catch (error) {
+            /* liste de secours conservée */
+        }
+    }
+
+    function getDepositCountry() {
+        const mine = String(state.user?.country || "").toUpperCase();
+        if (mine && DEPOSIT_COUNTRIES.some((c) => c.code === mine)) {
+            return mine;
+        }
+        let saved = "";
+
+        try {
+            saved = localStorage.getItem("nexmarket_deposit_country") || "";
+        } catch (error) {
+            saved = "";
+        }
+
+        return DEPOSIT_COUNTRIES.some((country) => country.code === saved)
+            ? saved
+            : "CG";
+    }
+
+    async function handleDepositSubmit(
+        event
+    ) {
+        event.preventDefault();
+        const input =
+            document.getElementById(
+                "depositAmount"
+            );
+        const amount =
+            Number(
+                input?.value
+            );
+        if (
+            !Number.isFinite(amount) ||
+            amount <= 0
+        ) {
+            showModalError(
+                "Montant invalide",
+                "Entre un montant supérieur à zéro."
+            );
+            return;
+        }
+        const depositPhone = (
+            document.getElementById("depositPhone")?.value || ""
+        ).replace(/[\s-]+/g, "").trim();
+        if (!/^\+?\d{6,15}$/.test(depositPhone)) {
+            showModalError(
+                "Numéro invalide",
+                "Entre ton numéro Mobile Money, sans l'indicatif du pays."
+            );
+            return;
+        }
+        const submitButton =
+            document.querySelector(
+                "#depositForm .modal-submit"
+            );
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.dataset.originalText =
+                submitButton.textContent.trim();
+            submitButton.textContent =
+                "Création du paiement...";
+        }
+        try {
+            /*
+             * Le dépôt est une route protégée.
+             * On s'assure donc que la Mini App possède
+             * bien son JWT Bearer avant d'envoyer la demande.
+             */
+            if (
+                !sessionStorage.getItem(
+                    "nexmarket_session_token"
+                )
+            ) {
+                await authenticateTelegram();
+            }
+            const data =
+                await apiRequest(
+                    "/deposits",
+                    {
+                        method: "POST",
+                        body:
+                            JSON.stringify({
+                                amount,
+                                phone: depositPhone,
+                                country:
+                                    document.querySelector(
+                                        "#depositCountryGrid .country-option.selected"
+                                    )?.dataset.country || getDepositCountry(),
+                                currency:
+                                    state.wallet?.currency ||
+                                    state.user?.currency ||
+                                    "XAF"
+                            })
+                    }
+                );
+            /*
+             * Selon la version du backend/provider,
+             * le lien peut avoir plusieurs noms.
+             */
+            const url =
+                data?.payment_link ||
+                data?.payment_url ||
+                data?.redirect_url ||
+                data?.checkout_url ||
+                data?.url ||
+                "";
+            const requestId =
+                data?.request_id ||
+                data?.deposit_request_id ||
+                data?.id ||
+                "";
+            const reference =
+                data?.reference ||
+                data?.deposit_reference ||
+                "";
+            /*
+             * On conserve la demande en attente pour pouvoir
+             * rafraîchir le wallet lorsque l'utilisateur revient
+             * après le paiement MoneyFusion.
+             */
+            sessionStorage.setItem(
+                "nexmarket_pending_deposit",
+                JSON.stringify({
+                    amount,
+                    request_id: requestId,
+                    reference,
+                    created_at: Date.now()
+                })
+            );
+            if (url) {
+                closeModal();
+                showToast(
+                    "Paiement prêt",
+                    "La page de paiement MoneyFusion va s'ouvrir. Termine le paiement puis reviens dans NexMarket."
+                );
+                openPaymentLink(url);
+                return;
+            }
+            /*
+             * Sans lien de paiement, on ne prétend surtout pas
+             * que le dépôt est effectué.
+             */
+            throw new Error(
+                data?.message ||
+                "MoneyFusion n'a fourni aucun lien de paiement."
+            );
+        } catch (error) {
+            showModalError(
+                "Dépôt impossible",
+                error.message ||
+                "Impossible de créer le paiement."
+            );
+        } finally {
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.textContent =
+                    submitButton.dataset.originalText ||
+                    "Continuer";
+            }
+        }
+    }
+    /* =====================================================
+       WITHDRAW
+    ===================================================== */
+    /* Pays + réseaux de retrait : viennent de MoneyFusion (/withdrawals/methods).
+       Aucun pays ni réseau n'est écrit en dur : seuls ceux disponibles s'affichent. */
+    const withdrawState = { countries: [], country: "", method: "" };
+
+    function openWalletWithdraw() {
+        withdrawState.countries = [];
+        withdrawState.country = "";
+        withdrawState.method = "";
+        openModal(`
+            <div class="wallet-modal">
+                <div class="modal-header-content modal-header-spaced">
+                    <div class="modal-title-wrap">
+                        <span class="modal-icon-badge withdraw-badge">
+                            ${ICONS.withdraw}
+                        </span>
+                        <div>
+                            <span class="section-kicker">
+                                PORTEFEUILLE
+                            </span>
+                            <h2>
+                                Retirer de l'argent
+                            </h2>
+                            <p class="modal-subtitle">
+                                Retire ton solde vers ton compte
+                                Mobile Money.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                <form
+                    id="withdrawForm"
+                    class="modal-form wallet-modal-form"
+                >
+                    <div class="modal-field" data-step="1">
+                        <label
+                            for="withdrawAmount"
+                            class="modal-field-label"
+                        >
+                            Montant
+                        </label>
+                        <div class="amount-input-wrap">
+                            <input
+                                id="withdrawAmount"
+                                type="number"
+                                min="${MIN_WITHDRAWAL}"
+                                step="1"
+                                inputmode="numeric"
+                                placeholder="${MIN_WITHDRAWAL}"
+                                required
+                            >
+                            <span>
+                                ${escapeHTML(
+                                    state.wallet?.currency ||
+                                    state.user?.currency ||
+                                    "XAF"
+                                )}
+                            </span>
+                        </div>
+                        <small class="modal-field-hint">
+                            Retrait minimum : ${MIN_WITHDRAWAL.toLocaleString(uiLocale())} XAF.
+                            Tu es prévenu dans le bot dès que le retrait est effectué.
+                        </small>
+                    </div>
+                    <div class="modal-field" data-step="2">
+                        <span class="modal-field-label">
+                            Pays
+                        </span>
+                        <div class="country-grid" id="withdrawCountryGrid">
+                            <p class="modal-field-hint">Chargement des pays...</p>
+                        </div>
+                    </div>
+                    <div class="modal-field hidden" id="withdrawMethodField" data-step="3">
+                        <span class="modal-field-label">
+                            Réseau Mobile Money
+                        </span>
+                        <div class="country-grid" id="withdrawMethodGrid"></div>
+                    </div>
+                    <div class="modal-field" data-step="3">
+                        <label
+                            for="withdrawPhone"
+                            class="modal-field-label"
+                        >
+                            Numéro Mobile Money
+                        </label>
+                        <div class="phone-input-wrap">
+                            <span class="phone-prefix" id="withdrawDial">+</span>
+                            <input
+                                id="withdrawPhone"
+                                type="tel"
+                                inputmode="tel"
+                                autocomplete="tel"
+                                placeholder="Ton numéro, sans l'indicatif"
+                                required
+                            >
+                        </div>
+                        <small class="modal-field-hint" id="withdrawCurrencyHint"></small>
+                    </div>
+                    <div class="step-summary" id="stepSummary" data-step="4"></div>
+                    <div class="payment-provider wallet-provider" data-step="4">
+                        <span class="provider-icon">
+                            ${ICONS.withdraw}
+                        </span>
+                        <div class="provider-copy">
+                            <span class="provider-label">
+                                Service de retrait
+                            </span>
+                            <strong>
+                                MoneyFusion
+                            </strong>
+                            <small>
+                                Les fonds seront envoyés vers
+                                le numéro et le réseau choisis.
+                            </small>
+                        </div>
+                        <span class="provider-status">
+                            Sécurisé
+                        </span>
+                    </div>
+                    <div
+                        id="modalError"
+                        class="modal-inline-error hidden"
+                        role="alert"
+                    >
+                        <span class="modal-error-dot"></span>
+                        <div>
+                            <strong></strong>
+                            <span></span>
+                        </div>
+                    </div>
+                    ${stepFinal(`<button type="submit" id="confirmWithdrawalButton" class="primary-action full-width modal-submit" disabled>${ICONS.withdraw}Confirmer le retrait</button>`, "Les fonds seront envoyés vers ton compte Mobile Money.")}
+                </form>
+            </div>
+        `);
+        let refreshWithdrawChange = null;
+        let changeWithdrawCountry = false;
+        const withdrawPhoneBox = document.getElementById("withdrawPhone");
+        if (withdrawPhoneBox && !withdrawPhoneBox.value && state.user?.phone) {
+            withdrawPhoneBox.value = state.user.phone;
+        }
+        const withdrawSteps = mountSteps(document.getElementById("withdrawForm"), {
+            labels: FLOW_LABELS,
+            icons: FLOW_ICONS,
+            skip: (n) => n === 2 && !changeWithdrawCountry && withdrawState.countries.some(
+                (c) => c.code === String(state.user?.country || "").toUpperCase()
+            ) && withdrawState.country === String(state.user?.country || "").toUpperCase(),
+            validate: (step) => {
+                const amount = Number(document.getElementById("withdrawAmount")?.value);
+                if (step === 1) {
+                    if (!(Number.isFinite(amount) && amount >= MIN_WITHDRAWAL)) {
+                        return ["Montant trop faible", `Le retrait minimum est de ${MIN_WITHDRAWAL.toLocaleString(uiLocale())} XAF.`];
+                    }
+                    const available = Number(state.wallet?.available_balance);
+                    if (Number.isFinite(available) && available < amount) {
+                        return ["Solde insuffisant", "Ton solde disponible est inférieur à ce montant."];
+                    }
+                }
+                if (step === 2 && !withdrawState.country) {
+                    return ["Pays", "Choisis ton pays."];
+                }
+                if (step === 3) {
+                    if (!withdrawState.method) {
+                        return ["Réseau", "Choisis ton réseau Mobile Money."];
+                    }
+                    if (!/^\+?\d{6,15}$/.test(cleanWithdrawPhone(document.getElementById("withdrawPhone")?.value))) {
+                        return ["Numéro invalide", "Entre ton numéro Mobile Money, sans l'indicatif."];
+                    }
+                }
+                return null;
+            },
+            onEnter: (step) => {
+                refreshWithdrawChange?.(step);
+                if (step === 5) {
+                    updateWithdrawButton();
+                }
+                if (step !== 4) {
+                    return;
+                }
+                const country = withdrawState.countries.find((c) => c.code === withdrawState.country);
+                const method = country?.methods.find((m) => m.key === withdrawState.method);
+                renderSummary([
+                    [STEP_ICONS.amount, "Montant", `${formatNumber(Number(document.getElementById("withdrawAmount")?.value) || 0)} XAF`],
+                    [STEP_ICONS.globe, "Pays", country?.name || ""],
+                    [STEP_ICONS.receipt, "Réseau", method?.name || ""],
+                    [STEP_ICONS.phone, "Numéro", `${country?.dial || ""} ${cleanWithdrawPhone(document.getElementById("withdrawPhone")?.value)}`]
+                ]);
+            }
+        });
+        refreshWithdrawChange = addChangeCountry(
+            withdrawSteps,
+            () => withdrawState.countries.find((c) => c.code === withdrawState.country)?.name || "",
+            () => { changeWithdrawCountry = true; }
+        );
+        withdrawState.onReady = () => refreshWithdrawChange?.(1);
+        document
+            .getElementById("withdrawForm")
+            ?.addEventListener(
+                "submit",
+                handleWithdrawSubmit
+            );
+        ["withdrawAmount", "withdrawPhone"].forEach((id) => {
+            document.getElementById(id)?.addEventListener("input", () => {
+                clearModalError();
+                updateWithdrawButton();
+            });
+        });
+        loadWithdrawMethods();
+    }
+    async function loadWithdrawMethods() {
+        const grid = document.getElementById("withdrawCountryGrid");
+        if (!grid) {
+            return;
+        }
+        grid.innerHTML = `<p class="modal-field-hint">Chargement des pays...</p>`;
+        try {
+            if (!sessionStorage.getItem("nexmarket_session_token")) {
+                await authenticateTelegram();
+            }
+            const data = await apiRequest("/withdrawals/methods");
+            withdrawState.countries = Array.isArray(data?.countries)
+                ? data.countries
+                : [];
+        } catch (error) {
+            grid.innerHTML = `
+                <p class="modal-field-hint">
+                    Impossible de charger les pays.
+                    <button type="button" class="secondary-action" id="withdrawRetry">
+                        Réessayer
+                    </button>
+                </p>`;
+            document
+                .getElementById("withdrawRetry")
+                ?.addEventListener("click", loadWithdrawMethods);
+            return;
+        }
+        if (!withdrawState.countries.length) {
+            grid.innerHTML = `<p class="modal-field-hint">Aucun pays disponible pour les retraits pour le moment.</p>`;
+            return;
+        }
+        let savedCountry = "";
+        let savedMethod = "";
+        try {
+            savedCountry = localStorage.getItem("nexmarket_withdraw_country") || "";
+            savedMethod = localStorage.getItem("nexmarket_withdraw_method") || "";
+        } catch (error) {
+            /* stockage indisponible : sans conséquence */
+        }
+        renderWithdrawCountries();
+        const mine = String(state.user?.country || "").toUpperCase();
+        const remembered = withdrawState.countries.find(
+            (country) => country.code === (mine || savedCountry)
+        );
+        if (remembered) {
+            selectWithdrawCountry(
+                remembered.code,
+                remembered.code === savedCountry ? savedMethod : ""
+            );
+        }
+        document.getElementById("withdrawForm")?._steps?.relayout();
+        withdrawState.onReady?.();
+    }
+    function renderWithdrawCountries() {
+        const grid = document.getElementById("withdrawCountryGrid");
+        if (!grid) {
+            return;
+        }
+        grid.innerHTML = withdrawState.countries.map((country) => `
+            <button
+                type="button"
+                class="country-option ${country.code === withdrawState.country ? "selected" : ""}"
+                data-withdraw-country="${escapeHTML(country.code)}"
+            >
+                <strong>${escapeHTML(country.name)}</strong>
+                <small>${escapeHTML(country.dial || country.currency || "")}</small>
+            </button>
+        `).join("");
+        grid.querySelectorAll("[data-withdraw-country]").forEach((button) => {
+            button.addEventListener("click", () => {
+                selectWithdrawCountry(button.dataset.withdrawCountry, "");
+            });
+        });
+    }
+    function selectWithdrawCountry(code, preferredMethod) {
+        const country = withdrawState.countries.find((item) => item.code === code);
+        if (!country) {
+            return;
+        }
+        withdrawState.country = country.code;
+        withdrawState.method = "";
+        renderWithdrawCountries();
+        const dial = document.getElementById("withdrawDial");
+        if (dial) {
+            dial.textContent = country.dial || "+";
+        }
+        const hint = document.getElementById("withdrawCurrencyHint");
+        if (hint) {
+            const cfa = ["XAF", "XOF"].includes(country.currency);
+            hint.textContent = cfa
+                ? ""
+                : `Le montant sera converti en ${country.currency} pour ce pays.`;
+        }
+        const field = document.getElementById("withdrawMethodField");
+        const grid = document.getElementById("withdrawMethodGrid");
+        if (field && grid) {
+            field.classList.remove("hidden");
+            grid.innerHTML = country.methods.map((method) => `
+                <button
+                    type="button"
+                    class="country-option"
+                    data-withdraw-method="${escapeHTML(method.key)}"
+                >
+                    <strong>${escapeHTML(method.name)}</strong>
+                </button>
+            `).join("");
+            grid.querySelectorAll("[data-withdraw-method]").forEach((button) => {
+                button.addEventListener("click", () => {
+                    selectWithdrawMethod(button.dataset.withdrawMethod);
+                });
+            });
+        }
+        const keys = country.methods.map((method) => method.key);
+        if (preferredMethod && keys.includes(preferredMethod)) {
+            selectWithdrawMethod(preferredMethod);
+        } else if (keys.length === 1) {
+            selectWithdrawMethod(keys[0]);
+        } else {
+            updateWithdrawButton();
+        }
+        clearModalError();
+    }
+    function selectWithdrawMethod(key) {
+        withdrawState.method = key;
+        document
+            .querySelectorAll("#withdrawMethodGrid [data-withdraw-method]")
+            .forEach((button) => {
+                button.classList.toggle(
+                    "selected",
+                    button.dataset.withdrawMethod === key
+                );
+            });
+        try {
+            localStorage.setItem("nexmarket_withdraw_country", withdrawState.country);
+            localStorage.setItem("nexmarket_withdraw_method", key);
+        } catch (error) {
+            /* stockage indisponible : sans conséquence */
+        }
+        updateWithdrawButton();
+        document.getElementById("withdrawPhone")?.focus();
+    }
+    function cleanWithdrawPhone(value) {
+        return String(value || "").replace(/[\s().-]+/g, "").trim();
+    }
+    function updateWithdrawButton() {
+        const button = document.getElementById("confirmWithdrawalButton");
+        if (!button) {
+            return;
+        }
+        const amount = Number(document.getElementById("withdrawAmount")?.value);
+        const phone = cleanWithdrawPhone(document.getElementById("withdrawPhone")?.value);
+        button.disabled = !(
+            Number.isFinite(amount) &&
+            amount >= MIN_WITHDRAWAL &&
+            withdrawState.country &&
+            withdrawState.method &&
+            /^\+?\d{6,15}$/.test(phone)
+        );
+    }
+    async function loadSellPayoutMethods() {
+        const select = document.getElementById("sellPayoutMethod");
+        if (!select) {
+            return;
+        }
+        let countries = [];
+        try {
+            const data = await apiRequest("/withdrawals/methods");
+            countries = Array.isArray(data?.countries) ? data.countries : [];
+        } catch (error) {
+            /* liste vide : l'argent restera dans le wallet */
+        }
+        const mine = String(state.user?.country || "").toUpperCase();
+        const list = countries.filter((c) => !mine || c.code === mine);
+        const shown = list.length ? list : countries;
+        select.innerHTML = `<option value="">Choisis ton réseau</option>` + shown.flatMap((c) =>
+            c.methods.map((m) =>
+                `<option value="${escapeHTML(c.code)}|${escapeHTML(m.key)}">${escapeHTML(shown.length > 1 ? c.name + " · " : "")}${escapeHTML(m.name)}</option>`
+            )
+        ).join("");
+    }
+    async function handleWithdrawSubmit(
+        event
+    ) {
+        event.preventDefault();
+        const amount = Number(
+            document.getElementById("withdrawAmount")?.value
+        );
+        const phone = cleanWithdrawPhone(
+            document.getElementById("withdrawPhone")?.value
+        );
+        if (
+            !Number.isFinite(amount) ||
+            amount <= 0
+        ) {
+            showModalError(
+                "Montant invalide",
+                "Entre un montant supérieur à zéro."
+            );
+            return;
+        }
+        if (amount < MIN_WITHDRAWAL) {
+            showModalError(
+                "Montant trop faible",
+                `Le retrait minimum est de ${MIN_WITHDRAWAL.toLocaleString(uiLocale())} XAF.`
+            );
+            return;
+        }
+        if (!withdrawState.country || !withdrawState.method) {
+            showModalError(
+                "Pays et réseau",
+                "Choisis ton pays puis ton réseau Mobile Money."
+            );
+            return;
+        }
+        if (!/^\+?\d{6,15}$/.test(phone)) {
+            showModalError(
+                "Numéro invalide",
+                "Entre ton numéro Mobile Money, sans l'indicatif du pays."
+            );
+            return;
+        }
+        const confirmButton = document.getElementById("confirmWithdrawalButton");
+        if (confirmButton) {
+            confirmButton.disabled = true;
+        }
+        try {
+            const data =
+                await apiRequest(
+                    "/withdrawals",
+                    {
+                        method: "POST",
+                        body:
+                            JSON.stringify({
+                                amount,
+                                country: withdrawState.country,
+                                method: withdrawState.method,
+                                phone
+                            })
+                    }
+                );
+            closeModal();
+            await loadWallet();
+            showToast(
+                "Retrait créé",
+                data?.message ||
+                "La demande de retrait a été enregistrée."
+            );
+            if (
+                state.currentPage ===
+                "wallet"
+            ) {
+                await renderWallet();
+            }
+        } catch (error) {
+            if (confirmButton) {
+                confirmButton.disabled = false;
+            }
+            showModalError(
+                "Retrait impossible",
+                error.message ||
+                "Impossible de créer la demande de retrait."
+            );
+        }
+    }
+    /* =====================================================
+       SELL PAGE
+    ===================================================== */
+    async function renderSell() {
+        state.currentPage =
+            "sell";
+        showLoading(
+            "Préparation de la vente..."
+        );
+        const [, detectedResult] = await Promise.allSettled([
+            loadMyListings(),
+            apiRequest("/channels/detected")
+        ]);
+        const detectedChannels =
+            detectedResult.status === "fulfilled"
+                ? detectedResult.value?.channels || []
+                : [];
+        if (!DOM.pageContainer) {
+            return;
+        }
+        DOM.pageContainer.innerHTML = `
+            <section class="sell-page">
+                <div class="page-heading">
+                    <span class="section-kicker">
+                        VENDEUR
+                    </span>
+                    <h1>
+                        Vendre un canal
+                    </h1>
+                    <p>
+                        Ajoute ton canal Telegram,
+                        vérifie-le puis propose ton prix.
+                    </p>
+                </div>
+                <div class="sell-notice">
+                    ${ICONS.lock}
+                    <div>
+                        <strong>
+                            Vérification obligatoire
+                        </strong>
+                        <p>
+                            Le bot NexMarket doit pouvoir
+                            vérifier le canal avant que
+                            ton annonce soit publiée.
+                        </p>
+                    </div>
+                </div>
+                <form
+                    id="sellForm"
+                    class="sell-form"
+                >
+                    ${
+                        state.sellError
+                            ? `<div class="sell-error">${escapeHTML(state.sellError)}</div>`
+                            : ""
+                    }
+                    ${renderDetectedChannels(detectedChannels)}
+                    <div class="channel-type" role="group" aria-label="Type de canal">
+                        <button type="button" class="channel-type-btn active" data-channel-type="public">
+                            <strong>Canal public</strong>
+                            <small>avec un @username</small>
+                        </button>
+                        <button type="button" class="channel-type-btn" data-channel-type="private">
+                            <strong>Canal privé</strong>
+                            <small>avec l'ID du canal</small>
+                        </button>
+                    </div>
+                    <label>
+                        <span id="sellChannelLabel">Lien ou @username du canal</span>
+                        <input
+                            id="sellUsername"
+                            type="text"
+                            placeholder="@moncanal"
+                            autocapitalize="off"
+                            autocomplete="off"
+                            required
+                        >
+                        <small id="sellChannelHint">
+                            Le canal doit être accessible
+                            et tu dois en être administrateur.
+                        </small>
+                    </label>
+                    <label>
+                        Catégorie
+                        <div class="nexa-category-picker">
+                            <input
+                                type="hidden"
+                                id="sellCategory"
+                                value=""
+                            >
+                            <button
+                                type="button"
+                                class="category-trigger"
+                                id="sellCategoryTrigger"
+                                aria-haspopup="dialog"
+                                aria-expanded="false"
+                            >
+                                <span id="sellCategoryText">
+                                    Choisir une catégorie
+                                </span>
+                                <span class="category-trigger-arrow">
+                                    ↓
+                                </span>
+                            </button>
+                            <div
+                                class="category-panel hidden"
+                                id="sellCategoryPanel"
+                                role="dialog"
+                                aria-label="Choisir une catégorie"
+                            >
+                                <div class="category-panel-header">
+                                    <div>
+                                        <span>CATÉGORIE</span>
+                                        <strong>Choisir une catégorie</strong>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        class="category-close"
+                                        id="sellCategoryClose"
+                                        aria-label="Fermer"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                                <div class="category-options">
+                                    <button type="button" data-category="News">News</button>
+                                    <button type="button" data-category="Sport">Sport</button>
+                                    <button type="button" data-category="Entertainment">Entertainment</button>
+                                    <button type="button" data-category="Games">Games</button>
+                                    <button type="button" data-category="Education">Education</button>
+                                    <button type="button" data-category="Business">Business</button>
+                                    <button type="button" data-category="Tech">Tech</button>
+                                    <button type="button" data-category="Commerce">Commerce</button>
+                                    <button type="button" data-category="Music">Music</button>
+                                    <button type="button" data-category="Creation">Creation</button>
+                                    <button type="button" data-category="Community">Community</button>
+                                    <button type="button" data-category="Other">Other</button>
+                                </div>
+                            </div>
+                        </div>
+                    </label>
+                    <div class="pay-method-wrap" id="sellPayChooser">
+                        <span class="pay-method-label">Moyen de paiement</span>
+                        <div class="pay-choice" role="group">
+                            <button type="button" data-pay="XAF">
+                                <strong>Mobile Money</strong>
+                                <small>Paiement en FCFA</small>
+                            </button>
+                            <button type="button" data-pay="GRAM">
+                                <strong>GRAM</strong>
+                                <small>Paiement en crypto</small>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="pay-chosen" id="sellPayChosen" hidden>
+                        <span id="sellPayChosenLabel"></span>
+                        <button type="button" id="sellPayChange">Changer</button>
+                    </div>
+                    <div id="sellPayFields"></div>
+                    <label>
+                        Description
+                        <textarea
+                            id="sellDescription"
+                            rows="5"
+                            maxlength="3000"
+                            placeholder="Présente ton canal aux acheteurs..."
+                        ></textarea>
+                    </label>
+                    <div class="proofs-block" id="sellPreviewBlock" hidden>
+                        <span class="proofs-title">
+                            Aperçu du canal <em>obligatoire</em>
+                        </span>
+                        <p class="proofs-help">
+                            Ton canal est privé : les acheteurs ne peuvent pas
+                            l'ouvrir. Ajoute 1 à 6 photos (captures de tes
+                            publications, médias, statistiques) : ils les verront
+                            en cliquant sur ton annonce.
+                        </p>
+                        <div class="proofs-grid" id="sellPreviewGrid"></div>
+                        <input
+                            type="file"
+                            id="sellPreviewInput"
+                            accept="image/*"
+                            multiple
+                            hidden
+                        >
+                        <button
+                            type="button"
+                            class="secondary-action full-width"
+                            id="sellPreviewAdd"
+                        >
+                            + Ajouter des photos d'aperçu
+                        </button>
+                    </div>
+                    <div class="proofs-block">
+                        <span class="proofs-title">
+                            Photos de preuve <em>obligatoire</em>
+                        </span>
+                        <p class="proofs-help">
+                            Ajoute 1 à 4 captures : statistiques du canal
+                            (abonnés, vues) et preuve que tu en es le
+                            propriétaire. Elles sont envoyées à
+                            l'administrateur pour validation.
+                        </p>
+                        <div class="proofs-grid" id="sellProofsGrid"></div>
+                        <input
+                            type="file"
+                            id="sellProofsInput"
+                            accept="image/*"
+                            multiple
+                            hidden
+                        >
+                        <button
+                            type="button"
+                            class="secondary-action full-width"
+                            id="sellProofsAdd"
+                        >
+                            + Ajouter des photos
+                        </button>
+                    </div>
+                    <button
+                        type="submit"
+                        class="primary-action full-width"
+                    >
+                        ${ICONS.sell}
+                        Soumettre mon canal
+                    </button>
+                </form>
+                <div class="my-listings-section">
+                    <div class="section-header">
+                        <div>
+                            <span class="section-kicker">
+                                MES ANNONCES
+                            </span>
+                            <h2>
+                                Mes ventes
+                            </h2>
+                        </div>
+                    </div>
+                    <div
+                        class="listing-feed"
+                        id="myListingsFeed"
+                    >
+                        ${
+                            state.myListings.length
+                                ? state.myListings
+                                    .map(
+                                        renderMyListing
+                                    )
+                                    .join("")
+                                : showEmpty(
+                                    "Aucune annonce",
+                                    "Tes annonces apparaîtront ici."
+                                )
+                        }
+                    </div>
+                </div>
+            </section>
+        `;
+        setupCategoryPicker();
+        bindDetectedChannels();
+        bindSellPayMethod();
+        applySellDraft();
+        bindChannelType();
+        bindProofs();
+        bindPreviews();
+        /* Affichés une seule fois : une visite ultérieure repart propre. */
+        state.sellError = "";
+        state.sellDraft = null;
+        document
+            .getElementById(
+                "sellForm"
+            )
+            ?.addEventListener(
+                "submit",
+                handleSellSubmit
+            );
+        bindMyListingActions();
+    }
+    /* Moyen de paiement de l'annonce : Mobile Money (FCFA) OU GRAM.
+       Une fois choisi, SEUL ce moyen reste à l'écran : aucune trace de l'autre. */
+    function renderSellPayFields() {
+        const method = gramEnabled() && state.sellPayMethod === "GRAM"
+            ? "GRAM"
+            : state.sellPayMethod === "XAF" ? "XAF" : null;
+        const chooser = document.getElementById("sellPayChooser");
+        const chosen = document.getElementById("sellPayChosen");
+        const fields = document.getElementById("sellPayFields");
+        if (!fields) {
+            return;
+        }
+        if (chooser) chooser.hidden = Boolean(method);
+        if (chosen) chosen.hidden = !method;
+        const label = document.getElementById("sellPayChosenLabel");
+        if (label) {
+            label.textContent = method === "GRAM"
+                ? "Paiement : GRAM"
+                : "Paiement : Mobile Money (FCFA)";
+        }
+        document
+            .querySelectorAll("#sellPayChooser [data-pay=GRAM]")
+            .forEach((button) => {
+                button.disabled = !gramEnabled();
+                const small = button.querySelector("small");
+                if (small) small.textContent = gramEnabled() ? "Paiement en crypto" : "Bientôt disponible";
+            });
+
+        const previousPrice = document.getElementById("sellPrice")?.value || "";
+        const previousAddress = document.getElementById("sellGramAddress")?.value || "";
+
+        if (!method) {
+            fields.innerHTML = "";
+            return;
+        }
+
+        fields.innerHTML = method === "GRAM"
+            ? `<label>
+                    Ton adresse GRAM (tu y recevras le paiement)
+                    <input id="sellGramAddress" type="text" autocomplete="off" autocapitalize="off"
+                        spellcheck="false" placeholder="UQ… ou EQ… (copiée depuis ton portefeuille Telegram)">
+                    <small class="gram-warning">Recopie-la depuis l'app « Argent » de Telegram : une seule lettre fausse, et le paiement est perdu.</small>
+                </label>
+                <label>
+                    Prix de vente (GRAM)
+                    <input id="sellPrice" type="number" min="1" step="0.01" placeholder="Ex : 25" required>
+                </label>`
+            : `<label>
+                    Prix de vente
+                    <input id="sellPrice" type="number" min="1" step="1" placeholder="Ex : 50000" required>
+                </label>
+                <label>
+                    Ton numéro Mobile Money (tu y reçois ton argent)
+                    <input id="sellPayoutPhone" type="tel" inputmode="tel" placeholder="Ton numéro, sans l'indicatif" value="${escapeHTML(state.user?.phone || "")}">
+                </label>
+                <label>
+                    Ton réseau
+                    <select id="sellPayoutMethod" class="buy-select"><option value="">Chargement…</option></select>
+                    <small class="gram-note">Une fois les fonds libérés par l'admin, l'argent arrive directement sur ce numéro.</small>
+                </label>`;
+        if (method !== "GRAM") {
+            loadSellPayoutMethods();
+        }
+
+        const price = document.getElementById("sellPrice");
+        if (price && previousPrice) price.value = previousPrice;
+        const address = document.getElementById("sellGramAddress");
+        if (address && previousAddress) address.value = previousAddress;
+    }
+
+    function bindSellPayMethod() {
+        document
+            .querySelectorAll("#sellPayChooser [data-pay]")
+            .forEach((button) => {
+                button.addEventListener("click", () => {
+                    if (button.dataset.pay === "GRAM" && !gramEnabled()) {
+                        showToast("Paiement GRAM", "Le paiement en GRAM n'est pas encore activé.");
+                        return;
+                    }
+                    state.sellPayMethod = button.dataset.pay === "GRAM" ? "GRAM" : "XAF";
+                    renderSellPayFields();
+                });
+            });
+        document.getElementById("sellPayChange")?.addEventListener("click", () => {
+            state.sellPayMethod = null;
+            renderSellPayFields();
+        });
+        renderSellPayFields();
+    }
+
+    /* Aperçu du canal (canaux PRIVÉS) : photos que les acheteurs verront. */
+    const MAX_PREVIEWS = 6;
+
+    function renderPreviewGrid() {
+        const grid = document.getElementById("sellPreviewGrid");
+        const addButton = document.getElementById("sellPreviewAdd");
+        if (!grid) {
+            return;
+        }
+        grid.innerHTML = state.sellPreviews
+            .map((data, index) => `
+                <div class="proof-thumb">
+                    <img src="${data}" alt="Aperçu ${index + 1}">
+                    <button type="button" class="proof-remove" data-preview-remove="${index}" aria-label="Retirer la photo">×</button>
+                </div>`)
+            .join("");
+        grid.querySelectorAll("[data-preview-remove]").forEach((button) => {
+            button.addEventListener("click", () => {
+                state.sellPreviews.splice(Number(button.dataset.previewRemove), 1);
+                renderPreviewGrid();
+            });
+        });
+        if (addButton) {
+            addButton.disabled = state.sellPreviews.length >= MAX_PREVIEWS;
+            addButton.textContent = state.sellPreviews.length >= MAX_PREVIEWS
+                ? `${MAX_PREVIEWS} photos maximum`
+                : state.sellPreviews.length
+                ? `+ Ajouter une photo (${state.sellPreviews.length}/${MAX_PREVIEWS})`
+                : "+ Ajouter des photos d'aperçu";
+        }
+    }
+
+    function bindPreviews() {
+        const input = document.getElementById("sellPreviewInput");
+        renderPreviewGrid();
+        document.getElementById("sellPreviewAdd")?.addEventListener("click", () => input?.click());
+        input?.addEventListener("change", async () => {
+            const files = Array.from(input.files || []);
+            input.value = "";
+            for (const file of files) {
+                if (state.sellPreviews.length >= MAX_PREVIEWS) {
+                    break;
+                }
+                try {
+                    state.sellPreviews.push(await compressImage(file));
+                    renderPreviewGrid();
+                } catch (error) {
+                    showToast("Photo ignorée", error.message);
+                }
+            }
+        });
+    }
+
+    /* =====================================================
+       NEXMARKET CATEGORY PICKER
+    ===================================================== */
+    function setupCategoryPicker() {
+        const trigger =
+            document.getElementById("sellCategoryTrigger");
+        const panel =
+            document.getElementById("sellCategoryPanel");
+        const closeButton =
+            document.getElementById("sellCategoryClose");
+        const hiddenInput =
+            document.getElementById("sellCategory");
+        const categoryText =
+            document.getElementById("sellCategoryText");
+        if (!trigger || !panel || !hiddenInput || !categoryText) {
+            return;
+        }
+        function closePicker() {
+            panel.classList.add("hidden");
+            panel.style.display = "none";
+            trigger.setAttribute("aria-expanded", "false");
+            document.body.classList.remove("category-picker-open");
+        }
+        function openPicker() {
+            if (panel.parentElement !== document.body) {
+                document.body.appendChild(panel);
+            }
+            panel.classList.remove("hidden");
+            panel.style.display = "block";
+            trigger.setAttribute("aria-expanded", "true");
+            document.body.classList.add("category-picker-open");
+        }
+        trigger.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (panel.classList.contains("hidden")) {
+                openPicker();
+            } else {
+                closePicker();
+            }
+        });
+        closeButton?.addEventListener("click", closePicker);
+        panel.querySelectorAll("[data-category]").forEach(option => {
+            option.addEventListener("click", () => {
+                const value = option.dataset.category;
+                if (!value) {
+                    return;
+                }
+                hiddenInput.value = value;
+                categoryText.textContent = value;
+                trigger.classList.add("selected");
+                panel.querySelectorAll("[data-category]").forEach(item => {
+                    item.classList.toggle(
+                        "active",
+                        item.dataset.category === value
+                    );
+                });
+                closePicker();
+            });
+        });
+        document.addEventListener("click", event => {
+            if (
+                !panel.classList.contains("hidden") &&
+                !panel.contains(event.target) &&
+                !trigger.contains(event.target)
+            ) {
+                closePicker();
+            }
+        });
+        document.addEventListener("keydown", event => {
+            if (
+                event.key === "Escape" &&
+                !panel.classList.contains("hidden")
+            ) {
+                closePicker();
+            }
+        });
+    }
+    /* =====================================================
+       CREATE SELLING LISTING
+    ===================================================== */
+    /* =====================================================
+       CANAUX DÉTECTÉS (le bot a été ajouté comme administrateur)
+    ===================================================== */
+    function renderDetectedChannels(list) {
+        if (!list.length) {
+            return `
+                <div class="detected-channels">
+                    <strong>Canaux détectés</strong>
+                    <p>
+                        Ajoute le bot NexMarket comme
+                        <b>administrateur</b> de ton canal
+                        (droits : gérer le canal, inviter des
+                        utilisateurs). Il apparaîtra ici
+                        automatiquement, même pour un canal privé.
+                    </p>
+                    <button
+                        type="button"
+                        class="text-button"
+                        data-detected-refresh
+                    >
+                        Actualiser la liste
+                    </button>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="detected-channels">
+                <strong>Canaux détectés</strong>
+                <p>Touche ton canal pour le sélectionner :</p>
+                ${list
+                    .map((channel) => {
+                        const missing = (channel.missing_rights || []).join(", ");
+
+                        return `
+                            <button
+                                type="button"
+                                class="detected-channel ${channel.rights_ok ? "" : "warn"}"
+                                data-detected-id="${escapeHTML(channel.telegram_channel_id)}"
+                                data-detected-title="${escapeHTML(channel.title || "Canal")}"
+                                data-detected-username="${escapeHTML(channel.username || "")}"
+                                data-detected-missing="${escapeHTML(missing)}"
+                            >
+                                <span class="detected-name">
+                                    ${escapeHTML(channel.title || "Canal Telegram")}
+                                </span>
+                                <small>
+                                    ${
+                                        channel.username
+                                            ? "@" + escapeHTML(channel.username)
+                                            : "Canal privé"
+                                    }
+                                </small>
+                                <em>
+                                    ${
+                                        channel.rights_ok
+                                            ? "✔ Tous les droits sont accordés"
+                                            : "⚠ Droit manquant : " + escapeHTML(missing)
+                                    }
+                                </em>
+                            </button>
+                        `;
+                    })
+                    .join("")}
+                <button
+                    type="button"
+                    class="text-button"
+                    data-detected-refresh
+                >
+                    Actualiser la liste
+                </button>
+            </div>
+        `;
+    }
+
+    function captureSellDraft() {
+        const input = document.getElementById("sellUsername");
+
+        state.sellDraft = {
+            username: input?.value || "",
+            channelId: input?.dataset.channelId || "",
+            category: document.getElementById("sellCategory")?.value || "",
+            channelType: state.sellChannelType,
+            price: document.getElementById("sellPrice")?.value || "",
+            gramAddress:
+                document.getElementById("sellGramAddress")?.value || "",
+            description:
+                document.getElementById("sellDescription")?.value || ""
+        };
+    }
+
+    function bindDetectedChannels() {
+        const input = document.getElementById("sellUsername");
+
+        document
+            .querySelectorAll("[data-detected-id]")
+            .forEach((button) => {
+                button.addEventListener("click", () => {
+                    const missing = button.dataset.detectedMissing;
+
+                    if (missing) {
+                        showToast(
+                            "Droit manquant",
+                            `Active « ${missing} » pour NexMarket dans les administrateurs du canal, puis actualise la liste.`
+                        );
+                        return;
+                    }
+
+                    document
+                        .querySelectorAll("[data-detected-id]")
+                        .forEach((other) => other.classList.remove("selected"));
+
+                    button.classList.add("selected");
+
+                    const username = button.dataset.detectedUsername;
+
+                    input.value = username
+                        ? `@${username}`
+                        : `🔒 ${button.dataset.detectedTitle}`;
+                    input.dataset.channelId = button.dataset.detectedId;
+                });
+            });
+
+        /* Si l'utilisateur modifie le champ, la sélection est annulée. */
+        input?.addEventListener("input", () => {
+            delete input.dataset.channelId;
+            document
+                .querySelectorAll("[data-detected-id]")
+                .forEach((button) => button.classList.remove("selected"));
+        });
+
+        document
+            .querySelectorAll("[data-detected-refresh]")
+            .forEach((button) => {
+                button.addEventListener("click", () => {
+                    captureSellDraft();
+                    renderSell();
+                });
+            });
+    }
+
+    /* Ce que l'utilisateur avait saisi est conservé quand la publication échoue. */
+    function applySellDraft() {
+        const draft = state.sellDraft;
+
+        if (!draft) {
+            return;
+        }
+
+        const input = document.getElementById("sellUsername");
+
+        if (input) {
+            input.value = draft.username || "";
+
+            if (draft.channelId) {
+                input.dataset.channelId = draft.channelId;
+
+                document
+                    .querySelectorAll("[data-detected-id]")
+                    .forEach((button) => {
+                        button.classList.toggle(
+                            "selected",
+                            button.dataset.detectedId === String(draft.channelId)
+                        );
+                    });
+            }
+        }
+
+        state.sellChannelType = draft.channelType || state.sellChannelType;
+
+        const price = document.getElementById("sellPrice");
+        const description = document.getElementById("sellDescription");
+        const category = document.getElementById("sellCategory");
+        const categoryText = document.getElementById("sellCategoryText");
+
+        if (price) price.value = draft.price || "";
+        const gramInput = document.getElementById("sellGramAddress");
+        if (gramInput) gramInput.value = draft.gramAddress || "";
+        if (description) description.value = draft.description || "";
+
+        if (category && draft.category) {
+            category.value = draft.category;
+
+            if (categoryText) {
+                categoryText.textContent = draft.category;
+            }
+        }
+    }
+
+    /* =====================================================
+       VENTE : canal public / privé + photos de preuve
+    ===================================================== */
+    const MAX_PROOFS = 4;
+
+    function compressImage(file, maxSide = 1280, maxBytes = 700000) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onerror = () =>
+                reject(new Error("Lecture de la photo impossible."));
+
+            reader.onload = () => {
+                const image = new Image();
+
+                image.onerror = () =>
+                    reject(new Error("Cette photo ne peut pas être lue."));
+
+                image.onload = () => {
+                    const scale = Math.min(
+                        1,
+                        maxSide / Math.max(image.width, image.height)
+                    );
+                    const canvas = document.createElement("canvas");
+
+                    canvas.width = Math.max(1, Math.round(image.width * scale));
+                    canvas.height = Math.max(1, Math.round(image.height * scale));
+
+                    const context = canvas.getContext("2d");
+                    context.fillStyle = "#fff";
+                    context.fillRect(0, 0, canvas.width, canvas.height);
+                    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+                    let quality = 0.72;
+                    let data = canvas.toDataURL("image/jpeg", quality);
+
+                    /* Allège jusqu'à ~700 Ko : envoi rapide même en 3G. */
+                    while (data.length * 0.75 > maxBytes && quality > 0.4) {
+                        quality -= 0.1;
+                        data = canvas.toDataURL("image/jpeg", quality);
+                    }
+
+                    resolve(data);
+                };
+
+                image.src = reader.result;
+            };
+
+            reader.readAsDataURL(file);
+        });
+    }
+
+    function renderProofsGrid() {
+        const grid = document.getElementById("sellProofsGrid");
+        const addButton = document.getElementById("sellProofsAdd");
+
+        if (!grid) {
+            return;
+        }
+
+        grid.innerHTML = state.sellProofs
+            .map(
+                (data, index) => `
+                    <div class="proof-thumb">
+                        <img src="${data}" alt="Preuve ${index + 1}">
+                        <button
+                            type="button"
+                            class="proof-remove"
+                            data-proof-remove="${index}"
+                            aria-label="Retirer la photo"
+                        >×</button>
+                    </div>
+                `
+            )
+            .join("");
+
+        grid.querySelectorAll("[data-proof-remove]").forEach((button) => {
+            button.addEventListener("click", () => {
+                state.sellProofs.splice(Number(button.dataset.proofRemove), 1);
+                renderProofsGrid();
+            });
+        });
+
+        if (addButton) {
+            addButton.disabled = state.sellProofs.length >= MAX_PROOFS;
+            addButton.textContent =
+                state.sellProofs.length >= MAX_PROOFS
+                    ? `${MAX_PROOFS} photos maximum`
+                    : state.sellProofs.length
+                    ? `+ Ajouter une photo (${state.sellProofs.length}/${MAX_PROOFS})`
+                    : "+ Ajouter des photos";
+        }
+    }
+
+    function bindProofs() {
+        const input = document.getElementById("sellProofsInput");
+        const addButton = document.getElementById("sellProofsAdd");
+
+        renderProofsGrid();
+
+        addButton?.addEventListener("click", () => input?.click());
+
+        input?.addEventListener("change", async () => {
+            const files = Array.from(input.files || []);
+            input.value = "";
+
+            for (const file of files) {
+                if (state.sellProofs.length >= MAX_PROOFS) {
+                    break;
+                }
+
+                try {
+                    state.sellProofs.push(await compressImage(file));
+                    renderProofsGrid();
+                } catch (error) {
+                    showToast("Photo ignorée", error.message);
+                }
+            }
+        });
+    }
+
+    function applyChannelType() {
+        const isPrivate = state.sellChannelType === "private";
+        const input = document.getElementById("sellUsername");
+        const label = document.getElementById("sellChannelLabel");
+        const hint = document.getElementById("sellChannelHint");
+
+        document.querySelectorAll("[data-channel-type]").forEach((button) => {
+            button.classList.toggle(
+                "active",
+                button.dataset.channelType === state.sellChannelType
+            );
+        });
+
+        if (label) {
+            label.textContent = isPrivate
+                ? "ID du canal privé"
+                : "Lien ou @username du canal";
+        }
+
+        if (input) {
+            input.placeholder = isPrivate ? "-1001234567890" : "@moncanal";
+            input.inputMode = isPrivate ? "numeric" : "text";
+        }
+
+        const previewBlock = document.getElementById("sellPreviewBlock");
+        if (previewBlock) {
+            previewBlock.hidden = !isPrivate;
+        }
+
+        if (hint) {
+            hint.textContent = isPrivate
+                ? "Ajoute le bot NexMarket comme administrateur : ton canal apparaît dans « Canaux détectés » (touche-le). Sinon colle ici l'ID du canal. Les acheteurs n'auront pas de lien public."
+                : "Le canal doit être public (avec un @username) et tu dois en être administrateur. Les visiteurs pourront ouvrir ton canal depuis l'annonce.";
+        }
+    }
+
+    function bindChannelType() {
+        applyChannelType();
+
+        document.querySelectorAll("[data-channel-type]").forEach((button) => {
+            button.addEventListener("click", () => {
+                if (state.sellChannelType === button.dataset.channelType) {
+                    return;
+                }
+
+                state.sellChannelType = button.dataset.channelType;
+
+                /* On change de mode : l'ancienne saisie n'a plus de sens. */
+                const input = document.getElementById("sellUsername");
+
+                if (input) {
+                    input.value = "";
+                    delete input.dataset.channelId;
+                }
+
+                document
+                    .querySelectorAll("[data-detected-id]")
+                    .forEach((other) => other.classList.remove("selected"));
+
+                applyChannelType();
+            });
+        });
+    }
+
+    async function handleSellSubmit(
+        event
+    ) {
+        event.preventDefault();
+        const usernameInput =
+            document.getElementById(
+                "sellUsername"
+            );
+        const categoryInput =
+            document.getElementById(
+                "sellCategory"
+            );
+        const priceInput =
+            document.getElementById(
+                "sellPrice"
+            );
+        const descriptionInput =
+            document.getElementById(
+                "sellDescription"
+            );
+        const username =
+            usernameInput?.value.trim();
+        const category =
+            categoryInput?.value;
+        const price =
+            Number(
+                priceInput?.value
+            );
+        const description =
+            descriptionInput?.value.trim() ||
+            "";
+        const isPrivate = state.sellChannelType === "private";
+        const detectedId = usernameInput?.dataset.channelId || "";
+        if (!state.sellPayMethod) {
+            showToast(
+                "Moyen de paiement",
+                "Choisis comment tu veux être payé : Mobile Money ou GRAM."
+            );
+            return;
+        }
+        const payInGram = gramEnabled() && state.sellPayMethod === "GRAM";
+        const gramAddress = (
+            document.getElementById("sellGramAddress")?.value || ""
+        ).trim();
+
+        if (payInGram && !/^[A-Za-z0-9_-]{48}$|^-?[01]:[0-9a-fA-F]{64}$/.test(gramAddress)) {
+            showToast(
+                "Adresse GRAM invalide",
+                "Recopie ton adresse GRAM depuis l'app « Argent » de Telegram (48 caractères)."
+            );
+            return;
+        }
+
+        const payoutPhone = cleanWithdrawPhone(document.getElementById("sellPayoutPhone")?.value);
+        const payoutChoice = (document.getElementById("sellPayoutMethod")?.value || "").split("|");
+        if (!payInGram && (!payoutChoice[1] || !/^\+?\d{6,15}$/.test(payoutPhone))) {
+            showToast(
+                "Compte Mobile Money",
+                "Entre ton numéro et choisis ton réseau pour recevoir ton argent."
+            );
+            return;
+        }
+
+        if (payInGram && price < 1) {
+            showToast(
+                "Prix invalide",
+                "Le prix minimum en GRAM est de 1 GRAM."
+            );
+            return;
+        }
+
+        if (!username) {
+            showToast(
+                "Canal requis",
+                isPrivate
+                    ? "Choisis ton canal dans « Canaux détectés » ou entre son ID."
+                    : "Entre le @username ou le lien du canal."
+            );
+            return;
+        }
+
+        if (isPrivate && !detectedId && !/^-?\d{6,}$/.test(username)) {
+            showToast(
+                "ID invalide",
+                "L'ID d'un canal ressemble à -1001234567890. Le plus simple : touche ton canal dans « Canaux détectés »."
+            );
+            return;
+        }
+
+        if (isPrivate && !state.sellPreviews.length) {
+            showToast(
+                "Aperçu requis",
+                "Canal privé : ajoute au moins une photo d'aperçu que les acheteurs pourront voir."
+            );
+            return;
+        }
+
+        if (!state.sellProofs.length) {
+            showToast(
+                "Photo de preuve requise",
+                "Ajoute au moins une capture des statistiques de ton canal."
+            );
+            return;
+        }
+        if (!category) {
+            showToast(
+                "Catégorie requise",
+                "Choisis une catégorie."
+            );
+            return;
+        }
+        if (
+            !Number.isFinite(price) ||
+            price <= 0
+        ) {
+            showToast(
+                "Prix invalide",
+                "Entre un prix supérieur à zéro."
+            );
+            return;
+        }
+        try {
+            showLoading(
+                "Vérification du canal..."
+            );
+            /*
+             * ÉTAPE 1
+             * Création / vérification du canal.
+             */
+            const channelData =
+                await apiRequest(
+                    "/channels",
+                    {
+                        method: "POST",
+                        body:
+                            JSON.stringify(
+                                detectedId
+                                    ? {
+                                          telegram_channel_id: Number(detectedId),
+                                          description
+                                      }
+                                    : isPrivate
+                                    ? {
+                                          telegram_channel_id: Number(username),
+                                          description
+                                      }
+                                    : { username, description }
+                            )
+                    }
+                );
+            const channel =
+                channelData?.channel ||
+                channelData;
+            const channelId =
+                channel?.id ||
+                channelData?.channel_id;
+            if (!channelId) {
+                throw new Error(
+                    "Le backend n'a pas retourné l'identifiant du canal."
+                );
+            }
+            /*
+             * ÉTAPE 2
+             * Création de l'annonce.
+             */
+            const listingData =
+                await apiRequest(
+                    "/listings",
+                    {
+                        method: "POST",
+                        body:
+                            JSON.stringify({
+                                channel_id:
+                                    Number(
+                                        channelId
+                                    ),
+                                price,
+                                category,
+                                description,
+                                ...(payInGram
+                                    ? { currency: "GRAM", gram_address: gramAddress }
+                                    : {
+                                        payout_country: payoutChoice[0],
+                                        payout_method: payoutChoice[1],
+                                        payout_phone: payoutPhone
+                                    }),
+                                proof_images: state.sellProofs,
+                                ...(isPrivate
+                                    ? { preview_images: state.sellPreviews }
+                                    : {})
+                            })
+                    }
+                );
+            state.sellProofs = [];
+            state.sellPreviews = [];
+            state.sellDraft = null;
+            state.sellError = "";
+            closeModal();
+            await loadMyListings();
+            showToast(
+                "Annonce envoyée",
+                listingData?.message ||
+                "Ton annonce est maintenant en attente de validation."
+            );
+            await renderSell();
+        } catch (error) {
+            /* On garde la saisie et on affiche la raison dans le formulaire. */
+            state.sellDraft = {
+                username,
+                channelId: usernameInput?.dataset.channelId || "",
+                channelType: state.sellChannelType,
+                category,
+                price: priceInput?.value || "",
+                description
+            };
+            state.sellError =
+                error.message || "Impossible de publier cette annonce.";
+            await renderSell();
+            showToast(
+                "Publication impossible",
+                error.message ||
+                "Impossible de publier cette annonce."
+            );
+        }
+    }
+    /* =====================================================
+       MY LISTING
+    ===================================================== */
+    function renderMyListing(
+        listing
+    ) {
+        const status =
+            listing.status ||
+            "pending_review";
+        const statusLabels = {
+            pending_review:
+                "En validation",
+            published:
+                "En ligne",
+            reserved:
+                "Réservé",
+            sold:
+                "Vendu",
+            rejected:
+                "Refusé",
+            cancelled:
+                "Annulé"
+        };
+        const title =
+            listing.title ||
+            listing.name ||
+            "Canal Telegram";
+        const price =
+            listing.price ??
+            0;
+        const currency =
+            listing.currency ||
+            state.user?.currency ||
+            "XAF";
+        return `
+            <article
+                class="channel-listing my-listing"
+                data-listing-id="${escapeHTML(
+                    listing.id
+                )}"
+            >
+                <div class="listing-main">
+                    <div class="listing-image">
+                        ${
+                            listing.photo_url
+                                ? `
+                                    <img
+                                        src="${escapeHTML(
+                                            listing.photo_url
+                                        )}"
+                                        alt="${escapeHTML(
+                                            title
+                                        )}"
+                                    >
+                                `
+                                : `
+                                    <div class="listing-image-placeholder">
+                                        ${ICONS.channel}
+                                    </div>
+                                `
+                        }
+                    </div>
+                    <div class="listing-content">
+                        <div class="listing-top">
+                            <div>
+                                <span class="listing-category">
+                                    ${escapeHTML(
+                                        statusLabels[
+                                            status
+                                        ] ||
+                                        status
+                                    )}
+                                </span>
+                                <h3>
+                                    ${escapeHTML(
+                                        title
+                                    )}
+                                </h3>
+                            </div>
+                        </div>
+                        <div class="listing-bottom">
+                            <strong class="listing-price">
+                                ${formatMoney(
+                                    price,
+                                    currency
+                                )}
+                            </strong>
+                            ${
+                                ["published", "pending_review", "rejected"].includes(
+                                    status
+                                )
+                                    ? `
+                                        <button
+                                            class="listing-view-button"
+                                            type="button"
+                                            data-action="edit-listing"
+                                            data-listing-id="${escapeHTML(
+                                                listing.id
+                                            )}"
+                                        >
+                                            Modifier
+                                            ${ICONS.arrow}
+                                        </button>
+                                    `
+                                    : ""
+                            }
+                        </div>
+                    </div>
+                </div>
+            </article>
+        `;
+    }
+    /* =====================================================
+       EDIT LISTING
+    ===================================================== */
+    async function openEditListing(
+        listingId
+    ) {
+        const listing =
+            state.myListings.find(
+                item =>
+                    Number(item.id) ===
+                    Number(listingId)
+            );
+        if (!listing) {
+            showToast(
+                "Annonce introuvable",
+                "Impossible de trouver cette annonce."
+            );
+            return;
+        }
+        openModal(`
+            <div class="modal-header-content">
+                <div>
+                    <span class="section-kicker">
+                        MON ANNONCE
+                    </span>
+                    <h2>
+                        Modifier le prix
+                    </h2>
+                </div>
+            </div>
+            <form
+                id="editListingForm"
+                class="modal-form"
+            >
+                <div class="form-static-value">
+                    <span>
+                        Canal
+                    </span>
+                    <strong>
+                        ${escapeHTML(
+                            listing.title ||
+                            listing.name ||
+                            "Canal Telegram"
+                        )}
+                    </strong>
+                </div>
+                <label>
+                    Nouveau prix
+                    <input
+                        id="editListingPrice"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value="${escapeHTML(
+                            listing.price ||
+                            ""
+                        )}"
+                        required
+                    >
+                </label>
+                <label>
+                    Description
+                    <textarea
+                        id="editListingDescription"
+                        rows="5"
+                        maxlength="3000"
+                    >${escapeHTML(
+                        listing.description ||
+                        ""
+                    )}</textarea>
+                </label>
+                <div class="edit-warning">
+                    ${ICONS.lock}
+                    <p>
+                        Après modification, l'annonce
+                        pourra repasser en validation
+                        avant sa publication.
+                    </p>
+                </div>
+                <div class="modal-actions">
+                    <button
+                        type="button"
+                        class="secondary-action"
+                        data-action="close-modal"
+                    >
+                        Annuler
+                    </button>
+                    <button
+                        type="submit"
+                        class="primary-action"
+                    >
+                        Enregistrer
+                    </button>
+                </div>
+            </form>
+        `);
+        document
+            .getElementById(
+                "editListingForm"
+            )
+            ?.addEventListener(
+                "submit",
+                async event => {
+                    event.preventDefault();
+                    const price =
+                        Number(
+                            document
+                                .getElementById(
+                                    "editListingPrice"
+                                )
+                                ?.value
+                        );
+                    const description =
+                        document
+                            .getElementById(
+                                "editListingDescription"
+                            )
+                            ?.value
+                            ?.trim() ||
+                        "";
+                    if (
+                        !Number.isFinite(price) ||
+                        price <= 0
+                    ) {
+                        showToast(
+                            "Prix invalide",
+                            "Entre un prix supérieur à zéro."
+                        );
+                        return;
+                    }
+                    try {
+                        await apiRequest(
+                            `/listings/${listingId}`,
+                            {
+                                method: "PATCH",
+                                body:
+                                    JSON.stringify({
+                                        price,
+                                        description
+                                    })
+                            }
+                        );
+                        closeModal();
+                        showToast(
+                            "Annonce modifiée",
+                            "La modification a été enregistrée."
+                        );
+                        await renderSell();
+                    } catch (error) {
+                        showToast(
+                            "Modification impossible",
+                            error.message ||
+                            "Impossible de modifier l'annonce."
+                        );
+                    }
+                }
+            );
+    }
+    /* =====================================================
+       CANCEL LISTING
+    ===================================================== */
+    async function cancelListing(
+        listingId
+    ) {
+        const confirmed =
+            window.confirm(
+                "Veux-tu vraiment annuler cette annonce ?"
+            );
+        if (!confirmed) {
+            return;
+        }
+        try {
+            await apiRequest(
+                `/listings/${listingId}/cancel`,
+                {
+                    method: "POST"
+                }
+            );
+            showToast(
+                "Annonce annulée",
+                "L'annonce a été retirée de la marketplace."
+            );
+            await renderSell();
+        } catch (error) {
+            showToast(
+                "Action impossible",
+                error.message ||
+                "Impossible d'annuler l'annonce."
+            );
+        }
+    }
+    /* =====================================================
+       TRANSACTIONS PAGE
+    ===================================================== */
+    async function renderTransactions() {
+        state.currentPage =
+            "transactions";
+        showLoading(
+            "Chargement des transactions..."
+        );
+        await loadTransactions();
+        if (!DOM.pageContainer) {
+            return;
+        }
+        DOM.pageContainer.innerHTML = `
+            <section class="transactions-page">
+                <div class="page-heading">
+                    <span class="section-kicker">
+                        ACTIVITÉ
+                    </span>
+                    <h1>
+                        Transactions
+                    </h1>
+                    <p>
+                        Consulte tes achats et tes ventes.
+                    </p>
+                </div>
+                <div class="transaction-list">
+                    ${
+                        state.transactions.length
+                            ? state.transactions
+                                .map(
+                                    renderTransaction
+                                )
+                                .join("")
+                            : showEmpty(
+                                "Aucune transaction",
+                                "Tes transactions apparaîtront ici.",
+                                ICONS.message
+                            )
+                    }
+                </div>
+            </section>
+        `;
+        bindTransactionActions();
+    }
+    /* =====================================================
+       TRANSACTION ITEM
+    ===================================================== */
+    const TRANSACTION_STATUS_LABELS = {
+        pending_payment: "Paiement en attente",
+        waiting_admin: "Fonds réservés — en attente d'un administrateur",
+        transfer_started: "Transfert du canal en cours",
+        protection_period: "Période de protection",
+        completed: "Terminée",
+        cancelled: "Annulée",
+        disputed: "Litige en cours",
+        refunded: "Remboursée"
+    };
+
+    function renderTransaction(
+        transaction
+    ) {
+        const status =
+            transaction.status ||
+            "pending_payment";
+        const statusLabels = TRANSACTION_STATUS_LABELS;
+        const amount =
+            transaction.channel_price ??
+            transaction.total_buyer_amount ??
+            0;
+        const currency =
+            transaction.currency ||
+            state.user?.currency ||
+            "XAF";
+        const reference =
+            transaction.reference ||
+            `TX-${transaction.id}`;
+        return `
+            <article
+                class="transaction-item"
+                data-transaction-id="${escapeHTML(
+                    transaction.id
+                )}"
+            >
+                <div class="transaction-icon">
+                    ${ICONS.channel}
+                </div>
+                <div class="transaction-content">
+                    <strong>
+                        ${
+                            transaction.listing_title ||
+                            "Transaction NexMarket"
+                        }
+                    </strong>
+                    <span>
+                        ${escapeHTML(
+                            reference
+                        )}
+                    </span>
+                    <small>
+                        ${escapeHTML(
+                            statusLabels[
+                                status
+                            ] ||
+                            status
+                        )}
+                    </small>
+                </div>
+                <div class="transaction-amount">
+                    <strong>
+                        ${formatMoney(
+                            amount,
+                            currency
+                        )}
+                    </strong>
+                    <button
+                        type="button"
+                        class="text-button"
+                        data-action="open-transaction"
+                        data-transaction-id="${escapeHTML(
+                            transaction.id
+                        )}"
+                    >
+                        Voir
+                        ${ICONS.arrow}
+                    </button>
+                </div>
+            </article>
+        `;
+    }
+    /* =====================================================
+       OPEN TRANSACTION
+    ===================================================== */
+    async function openTransaction(
+        transactionId
+    ) {
+        if (!transactionId) {
+            return;
+        }
+        try {
+            const data =
+                await apiRequest(
+                    `/transactions/${transactionId}`
+                );
+            const transaction =
+                data?.transaction ||
+                data;
+            const status =
+                transaction.status ||
+                "pending_payment";
+            const amount =
+                transaction.channel_price ??
+                transaction.total_buyer_amount ??
+                0;
+            const currency =
+                transaction.currency ||
+                state.user?.currency ||
+                "XAF";
+            const isBuyer =
+                Number(transaction.buyer_id) ===
+                Number(state.user?.id);
+            const tid = escapeHTML(transaction.id);
+            const isGram = String(currency).toUpperCase() === "GRAM";
+            const actionButtons = [
+                (status === "pending_payment" && isBuyer && transaction.gram_pay)
+                    ? `<button class="primary-action full-width" type="button" data-action="gram-pay" data-transaction-id="${tid}">Payer en GRAM</button>`
+                    : "",
+                isBuyer && status === "protection_period"
+                    ? `<button class="primary-action full-width" type="button" data-action="confirm-receipt" data-transaction-id="${tid}">J'ai bien reçu le canal</button>`
+                    : "",
+                ["waiting_admin", "transfer_started", "protection_period"].includes(status)
+                    ? `<button class="secondary-action full-width" type="button" data-action="dispute-transaction" data-transaction-id="${tid}">Ouvrir un litige</button>`
+                    : "",
+                ["pending_payment", "waiting_admin"].includes(status)
+                    ? `<button class="secondary-action full-width" type="button" data-action="cancel-transaction" data-transaction-id="${tid}">Annuler la transaction</button>`
+                    : ""
+            ].join("");
+            openModal(`
+                <div class="transaction-detail">
+                    <div class="transaction-detail-header">
+                        <span class="section-kicker">
+                            TRANSACTION
+                        </span>
+                        <h2>
+                            ${
+                                transaction.reference ||
+                                `TX-${transaction.id}`
+                            }
+                        </h2>
+                    </div>
+                    <div class="transaction-status">
+                        ${escapeHTML(
+                            TRANSACTION_STATUS_LABELS[status] || status
+                        )}
+                    </div>
+                    <div class="transaction-summary">
+                        <div>
+                            <span>
+                                Prix du canal
+                            </span>
+                            <strong>
+                                ${formatMoney(
+                                    amount,
+                                    currency
+                                )}
+                            </strong>
+                        </div>
+                        <div>
+                            <span>
+                                Vendeur
+                            </span>
+                            <strong>
+                                ${
+                                    transaction.seller_name ||
+                                    "Vendeur"
+                                }
+                            </strong>
+                        </div>
+                        <div>
+                            <span>
+                                Acheteur
+                            </span>
+                            <strong>
+                                ${
+                                    transaction.buyer_name ||
+                                    "Acheteur"
+                                }
+                            </strong>
+                        </div>
+                    </div>
+                    <div class="transaction-security">
+                        ${ICONS.lock}
+                        <div>
+                            <strong>
+                                Fonds sécurisés
+                            </strong>
+                            <p>
+                                Les fonds restent réservés
+                                pendant le traitement de la
+                                transaction.
+                            </p>
+                        </div>
+                    </div>
+                    ${isGram && status === "completed"
+                        ? `<div class="transaction-security">
+                            ${ICONS.lock}
+                            <div>
+                                <strong>${transaction.seller_paid_at ? "GRAM envoyés au vendeur" : "Envoi des GRAM en cours"}</strong>
+                                <p>${transaction.seller_paid_at
+                                    ? "L'administrateur a envoyé le paiement (moins la commission de 5 %)."
+                                    : "L'administrateur envoie le paiement au vendeur (moins la commission de 5 %)."}</p>
+                            </div>
+                        </div>`
+                        : ""}
+                    <button
+                        class="primary-action full-width"
+                        type="button"
+                        data-action="transaction-messages"
+                        data-transaction-id="${escapeHTML(
+                            transaction.id
+                        )}"
+                    >
+                        ${ICONS.message}
+                        Ouvrir la discussion
+                    </button>
+                    ${actionButtons}
+                </div>
+            `);
+            document
+                .querySelector(
+                    '[data-action="transaction-messages"]'
+                )
+                ?.addEventListener(
+                    "click",
+                    () => {
+                        openMessages(
+                            transaction.id
+                        );
+                    }
+                );
+            document
+                .querySelector(
+                    '[data-action="cancel-transaction"]'
+                )
+                ?.addEventListener(
+                    "click",
+                    () => {
+                        cancelTransaction(
+                            transaction.id
+                        );
+                    }
+                );
+            document
+                .querySelector('[data-action="gram-pay"]')
+                ?.addEventListener("click", () => {
+                    openGramPayment(transaction);
+                });
+            document
+                .querySelector('[data-action="confirm-receipt"]')
+                ?.addEventListener("click", () => {
+                    confirmReceipt(transaction.id);
+                });
+            document
+                .querySelector('[data-action="dispute-transaction"]')
+                ?.addEventListener("click", () => {
+                    disputeTransaction(transaction.id);
+                });
+        } catch (error) {
+            showToast(
+                "Erreur",
+                error.message ||
+                "Impossible de charger la transaction."
+            );
+        }
+    }
+    /* =====================================================
+       CANCEL TRANSACTION
+    ===================================================== */
+    async function cancelTransaction(
+        transactionId
+    ) {
+        const confirmed =
+            window.confirm(
+                "Veux-tu vraiment annuler cette transaction ?"
+            );
+        if (!confirmed) {
+            return;
+        }
+        try {
+            await apiRequest(
+                `/transactions/${transactionId}/cancel`,
+                {
+                    method: "POST"
+                }
+            );
+            closeModal();
+            showToast(
+                "Transaction annulée",
+                "Les fonds réservés ont été libérés."
+            );
+            await loadWallet();
+            await loadTransactions();
+        } catch (error) {
+            showToast(
+                "Annulation impossible",
+                error.message ||
+                "Impossible d'annuler cette transaction."
+            );
+        }
+    }
+    /* =====================================================
+       CONFIRMER LA RÉCEPTION / LITIGE
+    ===================================================== */
+
+    async function confirmReceipt(transactionId) {
+        if (!window.confirm("Confirmer la réception du canal ? Le vendeur sera payé.")) {
+            return;
+        }
+        try {
+            await apiRequest(
+                `/transactions/${transactionId}/confirm-receipt`,
+                { method: "POST" }
+            );
+            closeModal();
+            showToast("Merci !", "Le vendeur a été payé.");
+            await loadTransactions();
+        } catch (error) {
+            showToast("Confirmation impossible", error.message || "Réessaie plus tard.");
+        }
+    }
+
+    async function disputeTransaction(transactionId) {
+        const reason = (window.prompt("Explique le problème (5 caractères minimum) :") || "").trim();
+        if (reason.length < 5) {
+            return;
+        }
+        try {
+            await apiRequest(
+                `/transactions/${transactionId}/dispute`,
+                {
+                    method: "POST",
+                    body: JSON.stringify({ reason })
+                }
+            );
+            closeModal();
+            showToast("Litige ouvert", "Un administrateur va examiner ta demande.");
+            await loadTransactions();
+        } catch (error) {
+            showToast("Litige impossible", error.message || "Réessaie plus tard.");
+        }
+    }
+
+    /* =====================================================
+       MESSAGES
+    ===================================================== */
+    let chatTimer = null;
+    let chatTransactionId = null;
+    let chatLastSignature = "";
+    function stopChatRefresh() {
+        if (chatTimer) {
+            clearInterval(chatTimer);
+            chatTimer = null;
+        }
+        chatTransactionId = null;
+    }
+    function extractMessages(data) {
+        return Array.isArray(data)
+            ? data
+            : (data?.items || data?.messages || []);
+    }
+    function renderMessagesHTML(messages) {
+        if (!messages.length) {
+            return `
+                <div class="messages-empty">
+                    ${ICONS.message}
+                    <p>
+                        Aucun message pour le moment.
+                    </p>
+                </div>
+            `;
+        }
+        return messages
+            .map(renderMessage)
+            .join("");
+    }
+    async function refreshMessages(
+        transactionId,
+        { forceScroll = false } = {}
+    ) {
+        if (chatTransactionId !== transactionId) {
+            return;
+        }
+        const list =
+            document.getElementById(
+                "messagesList"
+            );
+        if (!list) {
+            stopChatRefresh();
+            return;
+        }
+        try {
+            const data =
+                await apiRequest(
+                    `/messages/transaction/${transactionId}`
+                );
+            const messages =
+                extractMessages(data);
+            const last =
+                messages[messages.length - 1];
+            const signature =
+                `${messages.length}:${last?.id || 0}`;
+            if (signature === chatLastSignature) {
+                return;
+            }
+            const nearBottom =
+                list.scrollHeight -
+                list.scrollTop -
+                list.clientHeight < 80;
+            chatLastSignature = signature;
+            list.innerHTML =
+                renderMessagesHTML(messages);
+            if (forceScroll || nearBottom) {
+                list.scrollTop =
+                    list.scrollHeight;
+            }
+            await markMessagesRead(
+                transactionId
+            );
+        } catch (error) {
+            console.warn(
+                "Actualisation discussion:",
+                error.message
+            );
+        }
+    }
+    async function openMessages(
+        transactionId
+    ) {
+        if (!transactionId) {
+            return;
+        }
+        try {
+            stopChatRefresh();
+            const data =
+                await apiRequest(
+                    `/messages/transaction/${transactionId}`
+                );
+            const messages =
+                extractMessages(data);
+            const last =
+                messages[messages.length - 1];
+            chatLastSignature =
+                `${messages.length}:${last?.id || 0}`;
+            chatTransactionId =
+                transactionId;
+            openModal(`
+                <div class="messages-modal">
+                    <div class="modal-header-content">
+                        <div>
+                            <span class="section-kicker">
+                                TRANSACTION
+                            </span>
+                            <h2>
+                                Discussion
+                            </h2>
+                            <p class="messages-hint">
+                                Acheteur, vendeur et administrateur
+                                échangent ici. Tu reçois aussi
+                                les messages dans le bot.
+                            </p>
+                        </div>
+                    </div>
+                    <div
+                        class="messages-list"
+                        id="messagesList"
+                    >
+                        ${renderMessagesHTML(messages)}
+                    </div>
+                    <form
+                        id="messageForm"
+                        class="message-form"
+                    >
+                        <input
+                            id="messageInput"
+                            type="text"
+                            maxlength="5000"
+                            placeholder="Écrire un message..."
+                            autocomplete="off"
+                            required
+                        >
+                        <button
+                            type="submit"
+                            class="primary-action"
+                            aria-label="Envoyer"
+                        >
+                            Envoyer
+                        </button>
+                    </form>
+                </div>
+            `);
+            const list =
+                document.getElementById(
+                    "messagesList"
+                );
+            if (list) {
+                list.scrollTop =
+                    list.scrollHeight;
+            }
+            document
+                .getElementById(
+                    "messageForm"
+                )
+                ?.addEventListener(
+                    "submit",
+                    event => {
+                        sendTransactionMessage(
+                            event,
+                            transactionId
+                        );
+                    }
+                );
+            chatTimer = setInterval(
+                () => {
+                    refreshMessages(
+                        transactionId
+                    );
+                },
+                CONFIG.CHAT_REFRESH_MS
+            );
+            await markMessagesRead(
+                transactionId
+            );
+        } catch (error) {
+            showToast(
+                "Erreur",
+                error.message ||
+                "Impossible de charger la discussion."
+            );
+        }
+    }
+    const CHAT_ROLE_LABELS = {
+        buyer: "Acheteur",
+        seller: "Vendeur",
+        admin: "Admin NexMarket",
+        system: "NexMarket",
+        assistant: "Assistant IA NexMarket"
+    };
+    function renderMessage(
+        message
+    ) {
+        if (
+            message.is_system_message ||
+            message.sender_role === "system"
+        ) {
+            return `
+                <div class="message-system">
+                    <p>
+                        ${escapeHTML(
+                            message.content ||
+                            ""
+                        )}
+                    </p>
+                    <small>
+                        ${formatDate(
+                            message.created_at
+                        )}
+                    </small>
+                </div>
+            `;
+        }
+        const own =
+            message.sender_role !== "assistant" &&
+            Number(
+                message.sender_id
+            ) ===
+            Number(
+                state.user?.id
+            );
+        const role =
+            CHAT_ROLE_LABELS[
+                message.sender_role
+            ] || "";
+        const author =
+            own
+                ? "Moi"
+                : [
+                    role,
+                    message.sender_name
+                ]
+                    .filter(Boolean)
+                    .join(" · ");
+        return `
+            <div
+                class="message-bubble ${
+                    own
+                        ? "own"
+                        : "other"
+                } role-${escapeHTML(
+                    message.sender_role ||
+                    "user"
+                )}"
+            >
+                <span class="message-author">
+                    ${escapeHTML(
+                        author
+                    )}
+                </span>
+                <p>
+                    ${escapeHTML(
+                        message.content ||
+                        ""
+                    )}
+                </p>
+                <small>
+                    ${formatDate(
+                        message.created_at
+                    )}
+                </small>
+            </div>
+        `;
+    }
+    async function sendTransactionMessage(
+        event,
+        transactionId
+    ) {
+        event.preventDefault();
+        const input =
+            document.getElementById(
+                "messageInput"
+            );
+        const content =
+            input?.value.trim();
+        if (!content) {
+            return;
+        }
+        const submit =
+            event.target.querySelector(
+                'button[type="submit"]'
+            );
+        if (submit) {
+            submit.disabled = true;
+        }
+        try {
+            await apiRequest(
+                `/messages/transaction/${transactionId}`,
+                {
+                    method: "POST",
+                    body: JSON.stringify({
+                        content,
+                        message_type: "text"
+                    })
+                }
+            );
+            input.value = "";
+            chatLastSignature = "";
+            await refreshMessages(
+                transactionId,
+                { forceScroll: true }
+            );
+        } catch (error) {
+            showToast(
+                "Message impossible",
+                error.message ||
+                "Impossible d'envoyer le message."
+            );
+        } finally {
+            if (submit) {
+                submit.disabled = false;
+            }
+            input?.focus();
+        }
+    }
+    async function markMessagesRead(
+        transactionId
+    ) {
+        try {
+            await apiRequest(
+                `/messages/transaction/${transactionId}/read`,
+                {
+                    method: "POST"
+                }
+            );
+        } catch (error) {
+            console.warn(
+                "Lecture messages:",
+                error.message
+            );
+        }
+    }
+    /* =====================================================
+       PROFILE PAGE
+    ===================================================== */
+    async function renderProfile() {
+        state.currentPage =
+            "profile";
+        showLoading(
+            "Chargement du profil..."
+        );
+        await loadWallet();
+        if (!DOM.pageContainer) {
+            return;
+        }
+        const user =
+            state.user ||
+            getTelegramUser() ||
+            {};
+        const wallet =
+            state.wallet ||
+            {};
+        const currency =
+            wallet.currency ||
+            user.currency ||
+            "XAF";
+        const available =
+            wallet.available_balance ??
+            wallet.balance ??
+            0;
+        DOM.pageContainer.innerHTML = `
+            <section class="profile-page">
+                <div class="profile-header">
+                    <div class="profile-avatar-large">
+                        <span>${escapeHTML(getProfile().initials)}</span>
+                        ${
+                            getProfile().photo_url
+                                ? `<img src="${escapeHTML(getProfile().photo_url)}" alt="Profil">`
+                                : ""
+                        }
+                    </div>
+                    <div>
+                        <span class="section-kicker">
+                            MON PROFIL
+                        </span>
+                        <h1>
+                            ${escapeHTML(
+                                (getProfile().name || getDisplayName(user))
+                            )}
+                        </h1>
+                        ${
+                            user.username
+                                ? `
+                                    <p>
+                                        @${escapeHTML(
+                                            user.username
+                                        )}
+                                    </p>
+                                `
+                                : ""
+                        }
+                        <div class="wallet-id profile-nexa">
+                            NEXA ID
+                            <b>${escapeHTML(state.user?.nexa_id || "En cours…")}</b>
+                            <button
+                                type="button"
+                                class="copy-chip"
+                                data-copy-nexa
+                            >${ICONS.copy} Copier</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="profile-menu">
+                    <button
+                        type="button"
+                        data-action="transactions"
+                    >
+                        ${ICONS.message}
+                        <span>
+                            Transactions
+                        </span>
+                        ${ICONS.arrow}
+                    </button>
+                    <button
+                        type="button"
+                        data-action="sell"
+                    >
+                        ${ICONS.sell}
+                        <span>
+                            Mes annonces
+                        </span>
+                        ${ICONS.arrow}
+                    </button>
+                    <button
+                        type="button"
+                        data-action="favorites"
+                    >
+                        ${ICONS.heart}
+                        <span>
+                            Mes favoris
+                        </span>
+                        ${ICONS.arrow}
+                    </button>
+                    <button
+                        type="button"
+                        data-action="settings"
+                    >
+                        ${ICONS.user}
+                        <span>
+                            Paramètres
+                        </span>
+                        ${ICONS.arrow}
+                    </button>
+                </div>
+                <div
+                    class="profile-version"
+                    id="profileVersion"
+                >
+                    NexMarket v${CONFIG.APP_VERSION}
+                </div>
+            </section>
+        `;
+        bindProfileActions();
+        bindBalanceTools();
+        setupAdminAccess();
+    }
+    /* =====================================================
+       FAVORITES PAGE
+    ===================================================== */
+    async function renderFavorites() {
+        state.currentPage =
+            "favorites";
+        showLoading(
+            "Chargement des favoris..."
+        );
+        await loadFavorites();
+        if (!DOM.pageContainer) {
+            return;
+        }
+        const favoriteIds =
+            new Set(
+                state.favorites.map(
+                    favorite =>
+                        Number(
+                            favorite.listing_id
+                        )
+                )
+            );
+        await loadListings();
+        const listings =
+            state.listings.filter(
+                listing =>
+                    favoriteIds.has(
+                        Number(
+                            listing.id
+                        )
+                    )
+            );
+        DOM.pageContainer.innerHTML = `
+            <section class="favorites-page">
+                <div class="page-heading">
+                    <span class="section-kicker">
+                        MA SÉLECTION
+                    </span>
+                    <h1>
+                        Favoris
+                    </h1>
+                    <p>
+                        Retrouve les canaux que tu souhaites
+                        garder sous la main.
+                    </p>
+                </div>
+                <div class="listing-feed">
+                    ${
+                        listings.length
+                            ? listings
+                                .map(
+                                    renderListing
+                                )
+                                .join("")
+                            : showEmpty(
+                                "Aucun favori",
+                                "Ajoute des canaux à tes favoris depuis la marketplace.",
+                                ICONS.heart
+                            )
+                    }
+                </div>
+            </section>
+        `;
+        bindPageActions();
+    }
+    /* =====================================================
+       SETTINGS
+    ===================================================== */
+    function settingsSegment(name, items, active) {
+        return `
+            <div class="segmented" data-setting="${name}" role="group">
+                ${items
+                    .map(
+                        ([value, label]) => `
+                    <button
+                        type="button"
+                        class="${value === active ? "active" : ""}"
+                        data-value="${value}"
+                        aria-pressed="${value === active}"
+                    >${label}</button>`
+                    )
+                    .join("")}
+            </div>`;
+    }
+
+    function openSettings() {
+        const lang = window.NexI18n ? window.NexI18n.getLang() : "fr";
+        const cur = displayCurrency();
+        openModal(`
+            <div class="settings-modal">
+                <div class="modal-header-content">
+                    <div>
+                        <span class="section-kicker">
+                            NEXMARKET
+                        </span>
+                        <h2>
+                            Paramètres
+                        </h2>
+                    </div>
+                </div>
+                <div class="settings-list">
+                    <div class="settings-group">
+                        <div class="settings-group-title">
+                            ${ICONS.message}
+                            <span>Langue</span>
+                        </div>
+                        ${settingsSegment(
+                            "language",
+                            [["fr", "Français"], ["en", "English"]],
+                            lang
+                        )}
+                    </div>
+                    <div class="settings-group">
+                        <div class="settings-group-title">
+                            ${ICONS.wallet}
+                            <span>Devise d'affichage</span>
+                        </div>
+                        ${settingsSegment(
+                            "currency",
+                            [["XAF", "FCFA"], ["EUR", "Euro €"], ["USD", "Dollar $"]],
+                            cur
+                        )}
+                        <p class="settings-note">
+                            Tes soldes, dépôts et retraits restent en XAF. Les autres devises sont affichées à titre indicatif.
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        data-action="about"
+                    >
+                        ${ICONS.help}
+                        <span>
+                            À propos
+                        </span>
+                        ${ICONS.arrow}
+                    </button>
+                    <button
+                        type="button"
+                        data-action="support"
+                    >
+                        ${ICONS.message}
+                        <span>
+                            Support
+                        </span>
+                        ${ICONS.arrow}
+                    </button>
+                </div>
+            </div>
+        `);
+        bindSettingsActions();
+    }
+
+    /* Enregistre une préférence : appliquée tout de suite, puis envoyée au
+       serveur (une panne réseau ne bloque jamais le changement). */
+    async function saveSetting(name, value) {
+        if (name === "language") {
+            state.user = { ...(state.user || {}), language: value };
+            window.NexI18n?.setLang(value);
+        } else {
+            value = String(value).toUpperCase();
+            state.user = { ...(state.user || {}), display_currency: value };
+        }
+
+        writeUserCache(state.user);
+
+        document
+            .querySelectorAll(`.segmented[data-setting="${name}"] button`)
+            .forEach((button) => {
+                const on = button.dataset.value === value;
+                button.classList.toggle("active", on);
+                button.setAttribute("aria-pressed", String(on));
+            });
+
+        if (name === "currency" && value === "USD" && !state.rates?.rates?.USD) {
+            await loadRates();
+            if (!state.rates?.rates?.USD) {
+                showToast(
+                    "Devise",
+                    "Le taux du dollar n'est pas disponible pour le moment."
+                );
+            }
+        }
+
+        /* Redessine la page ouverte avec la nouvelle langue / devise. */
+        navigateTo(state.currentPage || "home").catch(() => {});
+
+        try {
+            await apiRequest("/users/me", {
+                method: "PATCH",
+                body: JSON.stringify(
+                    name === "language"
+                        ? { language: value }
+                        : { preferred_currency: value }
+                )
+            });
+        } catch (error) {
+            console.warn("Préférence non enregistrée:", error.message);
+        }
+    }
+
+    /* =====================================================
+       ABOUT
+    ===================================================== */
+    function openAbout() {
+        openModal(`
+            <div class="about-modal">
+                <div class="about-logo">
+                    <img
+                        src="logo.png"
+                        alt="NexMarket"
+                        onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                    >
+                    <div class="about-logo-fallback" style="display:none">N</div>
+                </div>
+                <span class="section-kicker">
+                    NEXMARKET
+                </span>
+                <h2>
+                    La marketplace des canaux Telegram
+                </h2>
+                <p>
+                    NexMarket permet aux utilisateurs
+                    d'acheter et de vendre des canaux
+                    Telegram dans un environnement
+                    structuré et sécurisé.
+                </p>
+                <div class="about-company">
+                    <span>
+                        Propulsé par
+                    </span>
+                    <strong>
+                        NEXA
+                    </strong>
+                </div>
+                <div class="about-version">
+                    Version ${CONFIG.APP_VERSION}
+                </div>
+            </div>
+        `);
+    }
+    /* =====================================================
+       FAQ — QUESTIONS FRÉQUENTES
+    ===================================================== */
+    function openFAQ() {
+        openModal(`
+            <div class="faq-modal">
+                <div class="modal-header-content">
+                    <div>
+                        <span class="section-kicker">
+                            NEXMARKET
+                        </span>
+                        <h2>
+                            Questions fréquentes
+                        </h2>
+                        <p>
+                            Les réponses aux questions les plus fréquentes.
+                        </p>
+                    </div>
+                </div>
+                <div class="faq-list">
+                    <details class="faq-item">
+                        <summary>Qu'est-ce que NexMarket ?</summary>
+                        <div class="faq-answer">
+                            NexMarket est une marketplace permettant d'acheter et de vendre des canaux Telegram.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Comment acheter un canal ?</summary>
+                        <div class="faq-answer">
+                            Choisis une annonce, consulte ses informations puis lance la transaction depuis sa fiche.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Comment vendre mon canal ?</summary>
+                        <div class="faq-answer">
+                            Va dans « Vendre », renseigne les informations de ton canal puis soumets ton annonce pour vérification.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Le paiement est-il sécurisé ?</summary>
+                        <div class="faq-answer">
+                            NexMarket utilise un système de transaction avec blocage des fonds pendant le processus de transfert du canal.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Quand le vendeur reçoit-il son argent ?</summary>
+                        <div class="faq-answer">
+                            Le paiement intervient après les étapes prévues par la transaction et la période de protection.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Quelle est la commission NexMarket ?</summary>
+                        <div class="faq-answer">
+                            La commission NexMarket est de 5 % du prix de vente.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Pourquoi le bot NexMarket doit-il être administrateur ?</summary>
+                        <div class="faq-answer">
+                            Cette autorisation permet à NexMarket de vérifier le canal et de sécuriser les étapes nécessaires à la transaction.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Qui peut vendre un canal ?</summary>
+                        <div class="faq-answer">
+                            Le vendeur doit être le propriétaire réel du canal et fournir les informations nécessaires à la vérification.
+                        </div>
+                    </details>
+                    <details class="faq-item">
+                        <summary>Que faire en cas de problème ?</summary>
+                        <div class="faq-answer">
+                            Utilise le support NexMarket afin qu'un administrateur puisse examiner la situation.
+                        </div>
+                    </details>
+                </div>
+            </div>
+        `);
+    }
+    /* =====================================================
+       SUPPORT
+    ===================================================== */
+    function openSupport() {
+        openModal(`
+            <div class="support-modal">
+                <div class="modal-header-content">
+                    <div>
+                        <span class="section-kicker">
+                            AIDE
+                        </span>
+                        <h2>
+                            Support NexMarket
+                        </h2>
+                    </div>
+                </div>
+                <p>
+                    Pour toute question concernant
+                    une annonce, une transaction ou
+                    ton portefeuille, utilise le support
+                    NexMarket.
+                </p>
+                <button
+                    type="button"
+                    class="primary-action full-width"
+                    data-action="telegram-support"
+                >
+                    ${ICONS.message}
+                    Contacter le support
+                </button>
+            </div>
+        `);
+        document
+            .querySelector(
+                '[data-action="telegram-support"]'
+            )
+            ?.addEventListener(
+                "click",
+                () => {
+                    if (tg) {
+                        tg.openTelegramLink(
+                            SUPPORT_GROUP_URL
+                        );
+                    } else {
+                        window.open(
+                            SUPPORT_GROUP_URL,
+                            "_blank"
+                        );
+                    }
+                }
+            );
+    }
+    /* =====================================================
+       ADMIN ACCESS
+    ===================================================== */
+    function setupAdminAccess() {
+        const version =
+            document.getElementById(
+                "profileVersion"
+            );
+        if (!version) {
+            return;
+        }
+        version.addEventListener(
+            "click",
+            () => {
+                state.adminTapCount++;
+                clearTimeout(
+                    state.adminTapTimer
+                );
+                state.adminTapTimer =
+                    setTimeout(
+                        () => {
+                            state.adminTapCount =
+                                0;
+                        },
+                        CONFIG.ADMIN_TAP_WINDOW
+                    );
+                if (
+                    state.adminTapCount >=
+                    CONFIG.ADMIN_TAP_COUNT
+                ) {
+                    state.adminTapCount =
+                        0;
+                    openAdminLogin();
+                }
+            }
+        );
+    }
+    function openAdminLogin() {
+        openModal(`
+            <div class="admin-login">
+                <div class="modal-header-content modal-header-spaced">
+                    <div class="modal-title-wrap">
+                        <span class="modal-icon-badge admin-badge">
+                            ${ICONS.lock}
+                        </span>
+                        <div>
+                            <span class="section-kicker">
+                                NEXMARKET
+                            </span>
+                            <h2>
+                                Administration
+                            </h2>
+                            <p class="modal-subtitle">
+                                Accède au panneau de gestion
+                                sécurisé de NexMarket.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                <form
+                    id="adminLoginForm"
+                    class="modal-form admin-modal-form"
+                >
+                    <div class="modal-field">
+                        <label
+                            for="adminCode"
+                            class="modal-field-label"
+                        >
+                            Code administrateur
+                        </label>
+                        <div class="secure-input-wrap">
+                            <span>
+                                ${ICONS.lock}
+                            </span>
+                            <input
+                                id="adminCode"
+                                type="password"
+                                autocomplete="off"
+                                placeholder="Entrer le code administrateur"
+                                required
+                            >
+                        </div>
+                        <small class="field-hint">
+                            L'accès est réservé aux administrateurs
+                            NexMarket.
+                        </small>
+                    </div>
+                    <div
+                        id="modalError"
+                        class="modal-inline-error hidden"
+                        role="alert"
+                    >
+                        <span class="modal-error-dot"></span>
+                        <div>
+                            <strong></strong>
+                            <span></span>
+                        </div>
+                    </div>
+                    <button
+                        type="submit"
+                        class="primary-action full-width modal-submit"
+                    >
+                        ${ICONS.lock}
+                        Accéder au panneau
+                    </button>
+                </form>
+            </div>
+        `);
+        document
+            .getElementById("adminLoginForm")
+            ?.addEventListener(
+                "submit",
+                handleAdminLogin
+            );
+    }
+    async function handleAdminLogin(
+        event
+    ) {
+        event.preventDefault();
+        const code =
+            document
+                .getElementById(
+                    "adminCode"
+                )
+                ?.value;
+        if (!code) {
+            showModalError(
+                "Code requis",
+                "Entre le code administrateur pour continuer."
+            );
+            return;
+        }
+        try {
+            const data =
+                await apiRequest(
+                    "/admin/login",
+                    {
+                        method: "POST",
+                        body:
+                            JSON.stringify({
+                                code
+                            })
+                    }
+                );
+            if (!data?.token) {
+                throw new Error(
+                    "Token administrateur absent."
+                );
+            }
+            sessionStorage.setItem(
+                "nexmarket_admin_token",
+                data.token
+            );
+            closeModal();
+            window.location.href =
+                CONFIG.ADMIN_PATH;
+        } catch (error) {
+            const message = error.message || "Connexion impossible.";
+            const title = /incorrect/i.test(message)
+                ? "Code incorrect"
+                : error.status === 403
+                ? "Accès refusé"
+                : error.status === 503
+                ? "Configuration du serveur"
+                : error.status === 404
+                ? "Compte introuvable"
+                : "Connexion impossible";
+
+            showModalError(title, message);
+        }
+    }
+    /* =====================================================
+       NAVIGATION
+    ===================================================== */
+    async function navigateTo(
+        page
+    ) {
+        switch (page) {
+            case "home":
+                await renderHome();
+                break;
+            case "buy":
+                await renderBuy();
+                break;
+            case "sell":
+                await renderSell();
+                break;
+            case "messages":
+                await renderTransactions();
+                break;
+            case "profile":
+                await renderProfile();
+                break;
+            case "wallet":
+                await renderProfile();
+                break;
+            case "favorites":
+                await renderFavorites();
+                break;
+            case "transactions":
+                await renderTransactions();
+                break;
+            default:
+                await renderHome();
+        }
+        updateBottomNavigation(
+            page
+        );
+        if (
+            page ===
+            "buy"
+        ) {
+            setupSearchInput();
+        }
+    }
+    function updateBottomNavigation(
+        page
+    ) {
+        if (!DOM.bottomNavigation) {
+            return;
+        }
+        const buttons =
+            DOM.bottomNavigation.querySelectorAll(
+                "[data-page]"
+            );
+        buttons.forEach(
+            button => {
+                const active =
+                    button.dataset.page ===
+                    page;
+                button.classList.toggle(
+                    "active",
+                    active
+                );
+            }
+        );
+    }
+    /* =====================================================
+       EVENT BINDING
+    ===================================================== */
+    function bindPageActions() {
+        document
+            .querySelectorAll(
+                "[data-action]"
+            )
+            .forEach(
+                button => {
+                    if (
+                        button.dataset.bound ===
+                        "true"
+                    ) {
+                        return;
+                    }
+                    button.dataset.bound =
+                        "true";
+                    button.addEventListener(
+                        "click",
+                        handleAction
+                    );
+                }
+            );
+    }
+    function bindBuyActions() {
+        bindPageActions();
+        setupSearchInput();
+        document
+            .querySelectorAll(
+                "[data-category-select]"
+            )
+            .forEach(button => {
+                button.addEventListener(
+                    "click",
+                    async () => {
+                        const category =
+                            button.dataset.categorySelect ||
+                            "all";
+                        state.selectedCategory =
+                            category;
+                        await renderBuy();
+                    }
+                );
+            });
+        document
+            .querySelectorAll("[data-sort]")
+            .forEach((button) => {
+                button.addEventListener("click", async () => {
+                    state.sort = button.dataset.sort || "recent";
+                    await renderBuy();
+                });
+            });
+
+        document
+            .querySelector(
+                '[data-action="filters"]'
+            )
+            ?.addEventListener(
+                "click",
+                openFilters
+            );
+    }
+    function bindWalletActions() {
+        bindPageActions();
+    }
+    function bindProfileActions() {
+        bindPageActions();
+    }
+    function bindSettingsActions() {
+        document
+            .querySelectorAll(
+                "[data-action]"
+            )
+            .forEach(
+                element => {
+                    element.addEventListener(
+                        "click",
+                        event => {
+                            const action =
+                                event.currentTarget
+                                    .dataset
+                                    .action;
+                            if (
+                                action ===
+                                "about"
+                            ) {
+                                openAbout();
+                            } else if (
+                                action ===
+                                "support"
+                            ) {
+                                openSupport();
+                            }
+                        }
+                    );
+                }
+            );
+        document
+            .querySelectorAll(".segmented button")
+            .forEach((button) => {
+                button.addEventListener("click", () => {
+                    const setting =
+                        button.closest(".segmented")?.dataset.setting;
+                    if (setting) {
+                        saveSetting(setting, button.dataset.value);
+                    }
+                });
+            });
+    }
+    function bindMyListingActions() {
+        document
+            .querySelectorAll(
+                "[data-action]"
+            )
+            .forEach(
+                element => {
+                    element.addEventListener(
+                        "click",
+                        event => {
+                            const action =
+                                event.currentTarget
+                                    .dataset
+                                    .action;
+                            const id =
+                                event.currentTarget
+                                    .dataset
+                                    .listingId;
+                            if (
+                                action ===
+                                "edit-listing"
+                            ) {
+                                openEditListing(
+                                    id
+                                );
+                            }
+                            if (
+                                action ===
+                                "cancel-listing"
+                            ) {
+                                cancelListing(
+                                    id
+                                );
+                            }
+                        }
+                    );
+                }
+            );
+    }
+    function bindTransactionActions() {
+        document
+            .querySelectorAll(
+                '[data-action="open-transaction"]'
+            )
+            .forEach(
+                button => {
+                    button.addEventListener(
+                        "click",
+                        () => {
+                            openTransaction(
+                                button.dataset
+                                    .transactionId
+                            );
+                        }
+                    );
+                }
+            );
+    }
+    /* =====================================================
+       GLOBAL ACTION HANDLER
+    ===================================================== */
+    async function handleAction(
+        event
+    ) {
+        const element =
+            event.currentTarget;
+        const action =
+            element.dataset.action;
+        const listingId =
+            element.dataset.listingId;
+        if (action === "favorite") {
+            /* la carte entière est cliquable : ne pas ouvrir l'annonce */
+            event.stopPropagation();
+        }
+
+        switch (action) {
+            case "retry-listings":
+                state.listingsError = "";
+                if (state.currentPage === "buy") {
+                    await refreshBuyFeed();
+                } else {
+                    await navigateTo("home");
+                }
+                break;
+            case "home":
+                await navigateTo(
+                    "home"
+                );
+                break;
+            case "buy":
+                await navigateTo(
+                    "buy"
+                );
+                break;
+            case "sell":
+                await navigateTo(
+                    "sell"
+                );
+                break;
+            case "messages":
+                await navigateTo(
+                    "messages"
+                );
+                break;
+            case "profile":
+                await navigateTo(
+                    "profile"
+                );
+                break;
+            case "wallet":
+                await navigateTo(
+                    "profile"
+                );
+                break;
+            case "transactions":
+                await navigateTo(
+                    "transactions"
+                );
+                break;
+            case "favorites":
+                await navigateTo(
+                    "favorites"
+                );
+                break;
+            case "settings":
+                openSettings();
+                break;
+            case "view-listing":
+                await openListing(
+                    listingId
+                );
+                break;
+            case "favorite":
+                await toggleFavorite(
+                    listingId
+                );
+                break;
+            case "purchase":
+                await purchaseListing(
+                    listingId
+                );
+                break;
+            case "filters":
+                openFilters();
+                break;
+            case "reset-filters":
+                await resetFilters();
+                break;
+            case "apply-filters":
+                await applyFilters();
+                break;
+            case "close-modal":
+                closeModal();
+                break;
+            case "about":
+                openAbout();
+                break;
+            case "support":
+                openSupport();
+                break;
+            default:
+                break;
+        }
+    }
+    /* =====================================================
+       BOTTOM NAVIGATION
+    ===================================================== */
+    function setupBottomNavigation() {
+        if (!DOM.bottomNavigation) {
+            return;
+        }
+        DOM.bottomNavigation
+            .querySelectorAll(
+                "[data-page]"
+            )
+            .forEach(
+                button => {
+                    button.addEventListener(
+                        "click",
+                        async () => {
+                            await navigateTo(
+                                button.dataset.page
+                            );
+                        }
+                    );
+                }
+            );
+    }
+    /* =====================================================
+       HEADER
+    ===================================================== */
+    function setupHeader() {
+        DOM.profileAvatarButton
+            ?.addEventListener(
+                "click",
+                () => {
+                    navigateTo(
+                        "profile"
+                    );
+                }
+            );
+        DOM.headerSearchButton
+            ?.addEventListener(
+                "click",
+                () => {
+                    navigateTo(
+                        "buy"
+                    );
+                }
+            );
+        DOM.faqButton
+            ?.addEventListener(
+                "click",
+                () => {
+                    openFAQ();
+                }
+            );
+    }
+    /* =====================================================
+       MODAL EVENTS
+    ===================================================== */
+    function setupModal() {
+        DOM.modalOverlay
+            ?.addEventListener(
+                "click",
+                closeModal
+            );
+        DOM.modalClose
+            ?.addEventListener(
+                "click",
+                closeModal
+            );
+        DOM.modalContent
+            ?.addEventListener(
+                "click",
+                event => {
+                    event.stopPropagation();
+                }
+            );
+        document.addEventListener(
+            "keydown",
+            event => {
+                if (
+                    event.key ===
+                    "Escape"
+                ) {
+                    closeModal();
+                }
+            }
+        );
+    }
+    /* =====================================================
+   SPLASH SCREEN
+===================================================== */
+function showApplication() {
+    if (!DOM.app) {
+        return;
+    }
+    DOM.app.classList.remove("hidden");
+    DOM.app.style.display = "block";
+    DOM.app.style.visibility = "visible";
+    DOM.app.style.opacity = "1";
+}
+function hideSplash() {
+    // L'application doit toujours être visible
+    showApplication();
+    if (!DOM.splash) {
+        return;
+    }
+    DOM.splash.classList.add("hidden");
+    DOM.splash.classList.add("hide");
+    DOM.splash.style.opacity = "0";
+    DOM.splash.style.visibility = "hidden";
+    DOM.splash.style.pointerEvents = "none";
+    setTimeout(() => {
+        if (DOM.splash) {
+            DOM.splash.style.display = "none";
+        }
+    }, 550);
+}
+/* =====================================================
+   RETOUR APRÈS PAIEMENT / DÉPÔT
+===================================================== */
+/*
+ * Le serveur vérifie le paiement auprès de MoneyFusion
+ * quand on le lui demande (et toutes les 30 s de lui-même). On le
+ * demande ici : au retour dans l'app, puis toutes les 8 s tant qu'un
+ * dépôt est en attente (15 minutes maximum).
+ */
+const DEPOSIT_FINAL_STATUSES = [
+    "paid", "failed", "expired", "cancelled", "rejected", "amount_mismatch"
+];
+
+async function checkPendingDeposit() {
+    let pending = null;
+
+    try {
+        pending = JSON.parse(
+            sessionStorage.getItem("nexmarket_pending_deposit") || "null"
+        );
+    } catch (error) {
+        pending = null;
+    }
+
+    if (!pending) {
+        return;
+    }
+
+    // Abandon après 35 minutes (la page de paiement expire au bout de 30).
+    if (Date.now() - Number(pending.created_at || 0) > 35 * 60 * 1000) {
+        sessionStorage.removeItem("nexmarket_pending_deposit");
+        return;
+    }
+
+    try {
+        if (pending.request_id) {
+            const result = await apiRequest(
+                `/deposits/${pending.request_id}/check`,
+                { method: "POST" }
+            );
+
+            if (DEPOSIT_FINAL_STATUSES.includes(result?.status)) {
+                sessionStorage.removeItem("nexmarket_pending_deposit");
+            }
+
+            if (result?.paid) {
+                showToast("Dépôt reçu", "Ton solde a été mis à jour.");
+            } else if (
+                result?.status === "pending" &&
+                !pending.hinted &&
+                Date.now() - Number(pending.created_at || 0) > 90 * 1000
+            ) {
+                // Toujours « pending » chez MoneyFusion : le paiement n'est pas terminé.
+                pending.hinted = true;
+                sessionStorage.setItem(
+                    "nexmarket_pending_deposit",
+                    JSON.stringify(pending)
+                );
+                showToast(
+                    "Paiement non reçu",
+                    "MoneyFusion n'a pas encore reçu ton paiement. Rouvre la page de paiement, valide sur ton téléphone puis reviens ici."
+                );
+            }
+        }
+
+        await loadWallet();
+
+        if (state.currentPage === "wallet") {
+            await renderWallet();
+        }
+    } catch (error) {
+        console.warn("Vérification du dépôt:", error.message);
+    }
+}
+
+if (!window.__nexmarketDepositRefreshBound) {
+    window.__nexmarketDepositRefreshBound = true;
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+            checkPendingDeposit();
+        }
+    });
+
+    setInterval(() => {
+        if (
+            document.visibilityState === "visible" &&
+            sessionStorage.getItem("nexmarket_pending_deposit")
+        ) {
+            checkPendingDeposit();
+        }
+    }, 8000);
+}
+
+/* La page de paiement MoneyFusion est un site web classique : elle s'ouvre
+   dans le navigateur intégré de Telegram (openLink). Un lien t.me éventuel
+   reste ouvert dans Telegram. */
+function openPaymentLink(url) {
+    const isTelegramLink = /^https?:\/\/(t|telegram)\.me\//i.test(url);
+    if (tg && isTelegramLink && typeof tg.openTelegramLink === "function") {
+        tg.openTelegramLink(url);
+    } else if (tg && typeof tg.openLink === "function") {
+        tg.openLink(url);
+    } else {
+        window.location.href = url;
+    }
+}
+
+/* =====================================================
+   APP START
+===================================================== */
+async function initApp() {
+    /*
+       Le splash reste affiché AU MOINS 10 secondes (SPLASH_MIN_MS) et
+       jusqu'à ce que le profil (nom + photo) et l'accueil soient prêts
+       (60 s maximum). Pendant ce temps il affiche le nom et la photo de
+       l'utilisateur, récupérés auprès de Telegram.
+    */
+    showApplication();
+
+    try {
+        initTelegram();
+        setupHeader();
+        setupBottomNavigation();
+        setupModal();
+        setupBackAndTop();
+    } catch (error) {
+        console.error("Erreur interface NexMarket:", error);
+    }
+
+    readRatesCache();
+
+    /* Nom + photo connus de Telegram : affichés tout de suite. */
+    const telegramUser = getTelegramUser();
+
+    if (telegramUser?.id) {
+        const cached = readUserCache(telegramUser.id);
+
+        if (cached) {
+            state.user = {
+                ...telegramUser,
+                telegram_id: telegramUser.id,
+                nexa_id: cached.nexa_id,
+                currency: cached.currency || "XAF",
+                display_currency: cached.display_currency || "XAF",
+                language: cached.language || "fr"
+            };
+        }
+    }
+
+    updateTelegramProfile();
+    setSplashStatus("Démarrage…");
+
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let workDone = false;
+
+    const work = (async () => {
+        setSplashStatus("Connexion au serveur…");
+        wakeBackend();
+
+        /* Accueil en parallèle (squelettes, sans bloquer). */
+        const homeReady = navigateTo("home").catch((error) => {
+            console.error("Erreur accueil NexMarket:", error);
+
+            if (DOM.pageContainer) {
+                DOM.pageContainer.innerHTML = showEmpty(
+                    "NexMarket",
+                    "Impossible de charger les annonces pour le moment.",
+                    ICONS.help
+                );
+            }
+        });
+
+        try {
+            await authenticateTelegram();
+        } catch (error) {
+            console.warn("Authentification NexMarket:", error.message);
+        }
+
+        setSplashStatus("Chargement de ton profil…");
+
+        await Promise.allSettled([loadCurrentUser(), loadWallet()]);
+
+        /* Photo vérifiée (lien Telegram, sinon photo de secours du serveur). */
+        await Promise.race([resolveAvatar(), wait(12000)]);
+
+        setSplashStatus("Chargement des canaux…");
+        await homeReady;
+
+        /* Taux de change (affichage EUR / USD) : en arrière-plan. */
+        loadRates().then((ok) => {
+            if (ok && displayCurrency() !== "XAF") {
+                navigateTo(state.currentPage || "home").catch(() => {});
+            }
+        });
+
+        workDone = true;
+        setSplashStatus("Presque prêt…");
+    })();
+
+    /* Après 10 s, si le serveur n'est toujours pas prêt : barre « en attente ». */
+    wait(SPLASH_MIN_MS).then(() => {
+        if (!workDone) {
+            document
+                .getElementById("splashProgress")
+                ?.classList.add("is-waiting");
+            setSplashStatus("Le serveur se réveille, un instant…");
+        }
+    });
+
+    await Promise.race([
+        Promise.all([work, wait(SPLASH_MIN_MS)]),
+        wait(SPLASH_MAX_MS)
+    ]);
+
+    updateTelegramProfile();
+    setSplashStatus("Bienvenue !");
+    await wait(300);
+    hideSplash();
+
+    try {
+        window.__nexOnboard?.();
+    } catch (error) {
+        console.warn("Inscription:", error);
+    }
+
+    /* Nexa ID encore absent (réseau lent) : nouvel essai discret. */
+    if (!state.user?.nexa_id) {
+        setTimeout(async () => {
+            try {
+                await loadCurrentUser();
+                updateNexaIdDisplay();
+            } catch (error) {
+                console.warn("Nexa ID:", error.message);
+            }
+        }, 4000);
+    }
+}
+    /* =====================================================
+       RETOUR EN HAUT / BOUTON RETOUR
+       - bouton « Retour » en haut de chaque page (sauf l'accueil)
+       - bouton natif Telegram (flèche en haut à gauche)
+       - bouton « remonter » flottant quand on a défilé
+       - la page repart en haut à chaque changement de page
+    ===================================================== */
+    const NAV_HISTORY = { stack: [], last: null, goingBack: false };
+
+    function isModalOpen() {
+        return Boolean(
+            DOM.modalContainer &&
+            !DOM.modalContainer.classList.contains("hidden")
+        );
+    }
+
+    async function goBack() {
+        if (isModalOpen()) {
+            closeModal();
+            return;
+        }
+        const current = state.currentPage;
+        let target = NAV_HISTORY.stack.pop() || "home";
+        if (target === current) {
+            target = NAV_HISTORY.stack.pop() || "home";
+        }
+        NAV_HISTORY.goingBack = true;
+        await navigateTo(target);
+        window.scrollTo(0, 0);
+    }
+
+    function syncTelegramBackButton() {
+        const button = tg?.BackButton;
+        if (!button) {
+            return;
+        }
+        if (isModalOpen() || state.currentPage !== "home") {
+            button.show();
+        } else {
+            button.hide();
+        }
+    }
+
+    function decoratePage() {
+        const page = state.currentPage;
+
+        if (page !== NAV_HISTORY.last) {
+            if (!NAV_HISTORY.goingBack && NAV_HISTORY.last) {
+                NAV_HISTORY.stack.push(NAV_HISTORY.last);
+                if (NAV_HISTORY.stack.length > 20) {
+                    NAV_HISTORY.stack.shift();
+                }
+            }
+            NAV_HISTORY.goingBack = false;
+            NAV_HISTORY.last = page;
+            window.scrollTo(0, 0);
+        }
+
+        const container = DOM.pageContainer;
+
+        if (
+            container &&
+            page !== "home" &&
+            container.firstElementChild &&
+            !container.querySelector(".page-back-button")
+        ) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "page-back-button";
+            button.setAttribute("aria-label", "Retour");
+            button.innerHTML =
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+                'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                '<path d="m15 18-6-6 6-6"></path></svg><span>Retour</span>';
+            button.addEventListener("click", goBack);
+            container.insertBefore(button, container.firstChild);
+        }
+
+        syncTelegramBackButton();
+    }
+
+    function setupBackAndTop() {
+        if (DOM.pageContainer) {
+            new MutationObserver(decoratePage).observe(
+                DOM.pageContainer,
+                { childList: true }
+            );
+        }
+
+        if (DOM.modalContainer) {
+            new MutationObserver(syncTelegramBackButton).observe(
+                DOM.modalContainer,
+                { attributes: true, attributeFilter: ["class"] }
+            );
+        }
+
+        if (tg?.BackButton) {
+            tg.BackButton.onClick(goBack);
+        }
+
+        const topButton = document.createElement("button");
+        topButton.type = "button";
+        topButton.id = "scrollTopButton";
+        topButton.className = "scroll-top-button";
+        topButton.setAttribute("aria-label", "Remonter en haut");
+        topButton.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="m6 15 6-6 6 6"></path></svg>';
+        topButton.addEventListener("click", () => {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        });
+        (DOM.app || document.body).appendChild(topButton);
+
+        let ticking = false;
+        window.addEventListener(
+            "scroll",
+            () => {
+                if (ticking) {
+                    return;
+                }
+                ticking = true;
+                requestAnimationFrame(() => {
+                    topButton.classList.toggle(
+                        "visible",
+                        window.scrollY > 360
+                    );
+                    ticking = false;
+                });
+            },
+            { passive: true }
+        );
+
+        decoratePage();
+    }
+
+    /* =====================================================
+       DOM READY
+    ===================================================== */
+    if (
+        document.readyState ===
+        "loading"
+    ) {
+        document.addEventListener(
+            "DOMContentLoaded",
+            initApp,
+            {
+                once: true
+            }
+        );
+    } else {
+        initApp();
+    }
+})();
