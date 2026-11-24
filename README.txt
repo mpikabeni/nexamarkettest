@@ -31,3 +31,16 @@ v25 — plus de wallet visible
 - L'icône du profil (en-tête) ouvre le profil ; le solde a été retiré du profil.
 - L'achat se fait uniquement par MoneyFusion (ou GRAM) ; le vendeur est payé sur son Mobile Money.
 - Le code du dépôt/retrait reste dans app.js mais n'est plus accessible.
+
+v26
+- Canal PUBLIC : aucune photo demandée (ni preuve ni aperçu). Canal privé : inchangé.
+- Le nom « MoneyFusion » n'apparaît plus dans la mini-app.
+
+v27 — nouveau design : theme-v2.css (chargé après style.css). Supprime sa ligne <link> dans index.html pour revenir à l'ancien look.
+
+v28 — thème v2 étendu à toute la mini-app et à la console admin (admin/theme-v2.css).
+
+v29
+- Canal public : correctif CSS ([hidden]) -> plus aucune photo affichée.
+- Splash redessiné ; création de compte : recherche de pays, nouveau style.
+- Inscription ouverte à tous les pays SAUF Russie (RU) et Inde (IN) (aussi refusé côté serveur).

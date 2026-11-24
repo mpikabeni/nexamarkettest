@@ -3140,12 +3140,12 @@ if (!DOM.pageContainer) {
                     <div class="modal-field">
                         <label for="buyPhone" class="modal-field-label">Numéro Mobile Money</label>
                         <input id="buyPhone" type="tel" inputmode="tel" value="${escapeHTML(user.phone || "")}" placeholder="Ton numéro, sans l'indicatif" required>
-                        <small class="modal-field-hint">Tu choisis ton réseau (MTN, Airtel, Orange…) sur la page MoneyFusion. Ton argent reste bloqué en sécurité jusqu'à la livraison du canal.</small>
+                        <small class="modal-field-hint">Tu choisis ton réseau (MTN, Airtel, Orange…) sur la page de paiement. Ton argent reste bloqué en sécurité jusqu'à la livraison du canal.</small>
                     </div>
                     <div id="modalError" class="modal-inline-error hidden" role="alert">
                         <span class="modal-error-dot"></span><div><strong></strong><span></span></div>
                     </div>
-                    <button type="submit" class="primary-action full-width modal-submit">${STEP_ICONS.check}Payer avec MoneyFusion</button>
+                    <button type="submit" class="primary-action full-width modal-submit">${STEP_ICONS.check}Payer maintenant</button>
                 </form>
             </div>`);
         const buyKnown = DEPOSIT_COUNTRIES.some((c) => c.code === mine);
@@ -3179,7 +3179,7 @@ if (!DOM.pageContainer) {
                     })
                 });
                 closeModal();
-                showToast("Paiement en cours", "Termine le paiement MoneyFusion : ton achat sera créé automatiquement.");
+                showToast("Paiement en cours", "Termine le paiement : ton achat sera créé automatiquement.");
                 if (data?.payment_link) {
                     openPaymentLink(data.payment_link);
                 }
@@ -3608,10 +3608,10 @@ if (!DOM.pageContainer) {
         }
         const amount = Number(document.getElementById("depositAmount")?.value);
         if (!Number.isFinite(amount) || amount <= 0) {
-            box.innerHTML = `<p class="deposit-quote-note">Les frais éventuels sont affichés sur la page de paiement MoneyFusion.</p>`;
+            box.innerHTML = `<p class="deposit-quote-note">Les frais éventuels sont affichés sur la page de paiement.</p>`;
             return;
         }
-        box.innerHTML = `<p class="deposit-quote-note">Les frais éventuels sont affichés sur la page de paiement MoneyFusion.</p>`;
+        box.innerHTML = `<p class="deposit-quote-note">Les frais éventuels sont affichés sur la page de paiement.</p>`;
     }
 
     async function loadDepositFees() {
@@ -3805,6 +3805,7 @@ if (!DOM.pageContainer) {
                     </div>
                     <div class="modal-field" data-step="2">
                         <span class="modal-field-label">Ton pays</span>
+                        <input id="onboardSearch" class="country-search" type="search" placeholder="Rechercher ton pays" autocomplete="off">
                         <div class="country-grid" id="onboardCountries"><p class="modal-field-hint">Chargement…</p></div>
                         <label for="onboardPhone" class="modal-field-label">Numéro Mobile Money</label>
                         <div class="phone-input-wrap">
@@ -3867,15 +3868,7 @@ if (!DOM.pageContainer) {
                 showModalError("Création impossible", error.message || "Réessaie dans un instant.");
             }
         });
-        let list = DEPOSIT_COUNTRIES;
-        try {
-            const data = await apiRequest("/withdrawals/methods");
-            if (data?.countries?.length) {
-                list = data.countries;
-            }
-        } catch (error) {
-            /* liste de secours */
-        }
+        const list = worldCountries();
         const grid = document.getElementById("onboardCountries");
         if (!grid) {
             return;
@@ -3884,6 +3877,12 @@ if (!DOM.pageContainer) {
             <button type="button" class="country-option" data-code="${escapeHTML(c.code)}" data-dial="${escapeHTML(c.dial || "")}">
                 <strong>${escapeHTML(c.name)}</strong><small>${escapeHTML(c.dial || "")}</small>
             </button>`).join("");
+        document.getElementById("onboardSearch")?.addEventListener("input", (event) => {
+            const q = event.target.value.trim().toLowerCase();
+            grid.querySelectorAll(".country-option").forEach((o) => {
+                o.hidden = q && !o.textContent.toLowerCase().includes(q);
+            });
+        });
         grid.querySelectorAll(".country-option").forEach((button) => {
             button.addEventListener("click", () => {
                 grid.querySelectorAll(".country-option").forEach((o) => o.classList.remove("selected"));
@@ -3894,6 +3893,38 @@ if (!DOM.pageContainer) {
                 document.getElementById("onboardPhone")?.focus();
             });
         });
+    }
+
+    /* Inscription ouverte à tous les pays, SAUF la Russie (RU) et l'Inde (IN). */
+    const BLOCKED_COUNTRIES = ["RU", "IN"];
+    const WORLD_DIALS = {
+        1: "US CA JM BS BB TT DO PR", 7: "KZ", 20: "EG", 27: "ZA", 30: "GR", 31: "NL", 32: "BE", 33: "FR", 34: "ES",
+        36: "HU", 39: "IT", 40: "RO", 41: "CH", 43: "AT", 44: "GB", 45: "DK", 46: "SE", 47: "NO", 48: "PL", 49: "DE",
+        51: "PE", 52: "MX", 53: "CU", 54: "AR", 55: "BR", 56: "CL", 57: "CO", 58: "VE", 60: "MY", 61: "AU", 62: "ID",
+        63: "PH", 64: "NZ", 65: "SG", 66: "TH", 81: "JP", 82: "KR", 84: "VN", 86: "CN", 90: "TR", 92: "PK", 93: "AF",
+        94: "LK", 95: "MM", 98: "IR", 211: "SS", 212: "MA", 213: "DZ", 216: "TN", 218: "LY", 220: "GM", 221: "SN",
+        222: "MR", 223: "ML", 224: "GN", 225: "CI", 226: "BF", 227: "NE", 228: "TG", 229: "BJ", 230: "MU", 231: "LR",
+        232: "SL", 233: "GH", 234: "NG", 235: "TD", 236: "CF", 237: "CM", 238: "CV", 239: "ST", 240: "GQ", 241: "GA",
+        242: "CG", 243: "CD", 244: "AO", 245: "GW", 248: "SC", 249: "SD", 250: "RW", 251: "ET", 252: "SO", 253: "DJ",
+        254: "KE", 255: "TZ", 256: "UG", 257: "BI", 258: "MZ", 260: "ZM", 261: "MG", 263: "ZW", 264: "NA", 265: "MW",
+        266: "LS", 267: "BW", 268: "SZ", 269: "KM", 291: "ER", 351: "PT", 352: "LU", 353: "IE", 354: "IS", 355: "AL",
+        356: "MT", 357: "CY", 358: "FI", 359: "BG", 370: "LT", 371: "LV", 372: "EE", 373: "MD", 374: "AM", 375: "BY",
+        380: "UA", 381: "RS", 385: "HR", 386: "SI", 387: "BA", 389: "MK", 420: "CZ", 421: "SK", 502: "GT", 503: "SV",
+        504: "HN", 505: "NI", 506: "CR", 507: "PA", 509: "HT", 591: "BO", 592: "GY", 593: "EC", 595: "PY", 597: "SR",
+        598: "UY", 852: "HK", 853: "MO", 855: "KH", 856: "LA", 880: "BD", 886: "TW", 960: "MV", 961: "LB", 962: "JO",
+        963: "SY", 964: "IQ", 965: "KW", 966: "SA", 967: "YE", 968: "OM", 970: "PS", 971: "AE", 972: "IL", 973: "BH",
+        974: "QA", 975: "BT", 976: "MN", 977: "NP", 992: "TJ", 993: "TM", 994: "AZ", 995: "GE", 996: "KG", 998: "UZ"
+    };
+    function worldCountries() {
+        let names = null;
+        try { names = new Intl.DisplayNames(["fr"], { type: "region" }); } catch (e) { /* codes seuls */ }
+        const out = [];
+        Object.entries(WORLD_DIALS).forEach(([dial, codes]) => codes.split(" ").forEach((code) => {
+            if (!BLOCKED_COUNTRIES.includes(code)) {
+                out.push({ code, dial: `+${dial}`, name: (names && names.of(code)) || code });
+            }
+        }));
+        return out.sort((a, b) => a.name.localeCompare(b.name, "fr"));
     }
 
     /* Ouvre l'inscription tant que le compte n'est pas créé (serveur à jour seulement). */
@@ -4005,7 +4036,7 @@ if (!DOM.pageContainer) {
                                 Moyen de paiement
                             </span>
                             <strong>
-                                MoneyFusion
+                                Paiement sécurisé
                             </strong>
                             <small>
                                 Tu seras redirigé vers la
@@ -4027,7 +4058,7 @@ if (!DOM.pageContainer) {
                             <span></span>
                         </div>
                     </div>
-                    ${stepFinal(`<button type="submit" class="primary-action full-width modal-submit">${ICONS.deposit}Confirmer le dépôt</button>`, "Tu vas être redirigé vers la page de paiement sécurisée MoneyFusion.")}
+                    ${stepFinal(`<button type="submit" class="primary-action full-width modal-submit">${ICONS.deposit}Confirmer le dépôt</button>`, "Tu vas être redirigé vers la page de paiement sécurisée.")}
                 </form>
             </div>
         `);
@@ -4301,7 +4332,7 @@ if (!DOM.pageContainer) {
                 closeModal();
                 showToast(
                     "Paiement prêt",
-                    "La page de paiement MoneyFusion va s'ouvrir. Termine le paiement puis reviens dans NexMarket."
+                    "La page de paiement va s'ouvrir. Termine le paiement puis reviens dans NexMarket."
                 );
                 openPaymentLink(url);
                 return;
@@ -4312,7 +4343,7 @@ if (!DOM.pageContainer) {
              */
             throw new Error(
                 data?.message ||
-                "MoneyFusion n'a fourni aucun lien de paiement."
+                "Aucun lien de paiement n'a été fourni."
             );
         } catch (error) {
             showModalError(
@@ -4439,7 +4470,7 @@ if (!DOM.pageContainer) {
                                 Service de retrait
                             </span>
                             <strong>
-                                MoneyFusion
+                                Paiement sécurisé
                             </strong>
                             <small>
                                 Les fonds seront envoyés vers
@@ -4997,7 +5028,7 @@ if (!DOM.pageContainer) {
                             + Ajouter des photos d'aperçu
                         </button>
                     </div>
-                    <div class="proofs-block">
+                    <div class="proofs-block" id="sellProofBlock" hidden>
                         <span class="proofs-title">
                             Photos de preuve <em>obligatoire</em>
                         </span>
@@ -5645,6 +5676,12 @@ if (!DOM.pageContainer) {
             previewBlock.hidden = !isPrivate;
         }
 
+        /* Canal public : vérifié par le bot, aucune photo n'est demandée. */
+        const proofBlock = document.getElementById("sellProofBlock");
+        if (proofBlock) {
+            proofBlock.hidden = !isPrivate;
+        }
+
         if (hint) {
             hint.textContent = isPrivate
                 ? "Ajoute le bot NexMarket comme administrateur : ton canal apparaît dans « Canaux détectés » (touche-le). Sinon colle ici l'ID du canal. Les acheteurs n'auront pas de lien public."
@@ -5777,7 +5814,7 @@ if (!DOM.pageContainer) {
             return;
         }
 
-        if (!state.sellProofs.length) {
+        if (isPrivate && !state.sellProofs.length) {
             showToast(
                 "Photo de preuve requise",
                 "Ajoute au moins une capture des statistiques de ton canal."
@@ -5866,7 +5903,7 @@ if (!DOM.pageContainer) {
                                         payout_method: payoutChoice[1],
                                         payout_phone: payoutPhone
                                     }),
-                                proof_images: state.sellProofs,
+                                proof_images: isPrivate ? state.sellProofs : [],
                                 ...(isPrivate
                                     ? { preview_images: state.sellPreviews }
                                     : {})
@@ -8118,7 +8155,7 @@ async function checkPendingDeposit() {
                 );
                 showToast(
                     "Paiement non reçu",
-                    "MoneyFusion n'a pas encore reçu ton paiement. Rouvre la page de paiement, valide sur ton téléphone puis reviens ici."
+                    "Ton paiement n'a pas encore été reçu. Rouvre la page de paiement, valide sur ton téléphone puis reviens ici."
                 );
             }
         }
